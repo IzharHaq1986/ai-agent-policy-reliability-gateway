@@ -32,11 +32,14 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-56 acceptance tests. CI covers repository hygiene, lint, formatting,
-strict policy-module typing, and policy tests.
+99 acceptance tests: 56 policy tests and 43 API tests. CI covers repository hygiene, lint, formatting,
+strict source typing, and policy/API tests with warnings treated as errors.
 
-FastAPI, authentication, tool execution, approvals, persistence,
-live-model evaluations, and deployment are not implemented.
+A local FastAPI endpoint authenticates one server-configured Bearer
+credential and evaluates requests without executing tools.
+
+Tool execution, approvals, persistence, live-model evaluations,
+production identity management, and deployment are not implemented.
 
 This project is independent of the n8n Engineering Playground.
 Prior-project test results do not establish validation for this service.
@@ -58,15 +61,51 @@ Use Python 3.12 and an isolated virtual environment:
 python3 -m venv venv
 venv/bin/python -m pip --isolated install \
     --index-url https://pypi.org/simple --only-binary=:all: \
-    -r requirements-dev.txt
+    -r requirements.txt -r requirements-dev.txt
 venv/bin/python -m ruff check --no-cache src tests
 venv/bin/python -m ruff format --no-cache --check src tests
 venv/bin/python -m mypy --cache-dir venv/.mypy_cache
-PYTHONDONTWRITEBYTECODE=1 venv/bin/python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 venv/bin/python -m pytest -q -W error
 ```
 
 Direct validation tools are pinned; transitive dependencies are not
 locked. These tests do not establish production or live-model safety.
+
+## Local authenticated API
+
+`POST /v1/policy/evaluate` accepts the existing policy request body.
+The configured credential maps to `reliability-reader`; callers cannot
+select an identity through request fields or headers.
+
+Authentication precedes body reading. Accepted bodies are limited to
+4096 bytes, including streamed requests. The endpoint requires JSON
+and rejects duplicate keys and non-finite JSON constants.
+
+| HTTP status | Meaning |
+| --- | --- |
+| 200 | Valid request; ALLOW or DENY decision, always not_executed |
+| 401 | Missing, malformed, or invalid credential |
+| 413 | Body exceeds the limit |
+| 415 | Unsupported media type |
+| 422 | Invalid JSON, incomplete body, or invalid policy input |
+| 500 | Generic unexpected failure |
+
+Documentation endpoints are disabled. Missing or malformed server
+credential configuration prevents application creation.
+
+After installing dependencies, run locally with a generated credential:
+
+```bash
+export GATEWAY_API_TOKEN="$(venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+venv/bin/python -m uvicorn gateway.api:create_app \
+    --factory --app-dir src --host 127.0.0.1 --port 8000
+```
+
+Clients must supply the configured credential as a Bearer token.
+Do not print, commit, or include actual credentials in reports.
+The initial credential has no built-in expiry or revocation service.
+Public exposure, TLS, rate limiting, server timeouts, and deployment
+require separate design and validation.
 
 ## Engineering controls
 
