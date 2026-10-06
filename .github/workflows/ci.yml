@@ -118,6 +118,7 @@ jobs:
           "$RUNNER_TEMP/policy-venv/bin/python" -m pip --isolated install \
             --index-url https://pypi.org/simple \
             --only-binary=:all: \
+            -r requirements.txt \
             -r requirements-dev.txt
           "$RUNNER_TEMP/policy-venv/bin/python" -m pip check
 
@@ -140,4 +141,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/policy-venv/bin/python" -m pytest -q
+          "$RUNNER_TEMP/policy-venv/bin/python" -m pytest -q -W error
