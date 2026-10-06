@@ -94,3 +94,50 @@ jobs:
 
           print("Tracked artifact check passed")
           PY
+
+  policy-validation:
+    name: policy-validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out evaluated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Prepare isolated validation environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          python3 -m venv "$RUNNER_TEMP/policy-venv"
+          "$RUNNER_TEMP/policy-venv/bin/python" -m pip --isolated install \
+            --index-url https://pypi.org/simple \
+            --only-binary=:all: \
+            -r requirements-dev.txt
+          "$RUNNER_TEMP/policy-venv/bin/python" -m pip check
+
+      - name: Check lint and formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" -m ruff check --no-cache src tests
+          "$RUNNER_TEMP/policy-venv/bin/python" -m ruff format \
+            --no-cache --check src tests
+
+      - name: Check strict types
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
+            --cache-dir "$RUNNER_TEMP/policy-mypy-cache"
+
+      - name: Test deterministic policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" -m pytest -q
