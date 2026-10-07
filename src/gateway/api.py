@@ -1,15 +1,21 @@
 """Local authenticated HTTP boundary for the non-executing policy core."""
 
+import inspect
 import json
 import os
 import re
 import secrets
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import NoReturn
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse
 
+from gateway.audit import AuditEvent, build_audit_event
 from gateway.policy import evaluate_request
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
@@ -43,8 +49,16 @@ def _reject_constant(value: str) -> NoReturn:
     raise ValueError("Non-finite JSON number")
 
 
-def create_app() -> FastAPI:
-    """Load the server credential and create the local-only API application."""
+def create_app(*, audit_sink: Callable[[AuditEvent], None] | None = None) -> FastAPI:
+    """Create the local API with optional trusted audit delivery."""
+    if audit_sink is not None:
+        if (
+            not callable(audit_sink)
+            or inspect.iscoroutinefunction(audit_sink)
+            or inspect.iscoroutinefunction(type(audit_sink).__call__)
+        ):
+            raise RuntimeError("Invalid audit sink configuration")
+
     token = os.environ.get("GATEWAY_API_TOKEN")
     if token is None or _TOKEN.fullmatch(token) is None:
         raise RuntimeError("Invalid gateway credential configuration")
@@ -88,6 +102,17 @@ def create_app() -> FastAPI:
             return _error(422, "INVALID_REQUEST")
 
         result = evaluate_request(payload, principal_id="reliability-reader")
+        if audit_sink is not None:
+            event = build_audit_event(
+                result,
+                principal_id="reliability-reader",
+                event_id=str(uuid4()),
+                occurred_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+            checked_sink: Callable[[AuditEvent], object] = audit_sink
+            delivery_result = await run_in_threadpool(checked_sink, event)
+            if delivery_result is not None:
+                raise RuntimeError("Invalid audit sink result")
         if result["reason_code"] == "INVALID_REQUEST":
             return _error(422, "INVALID_REQUEST")
 
