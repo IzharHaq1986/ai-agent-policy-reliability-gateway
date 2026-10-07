@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-99 acceptance tests: 56 policy tests and 43 API tests. CI covers repository hygiene, lint, formatting,
+190 acceptance tests: 56 policy tests, 43 API tests, and 91 audit tests. CI covers repository hygiene, lint, formatting,
 strict source typing, and policy/API tests with warnings treated as errors.
 
 A local FastAPI endpoint authenticates one server-configured Bearer
@@ -106,6 +106,30 @@ Do not print, commit, or include actual credentials in reports.
 The initial credential has no built-in expiry or revocation service.
 Public exposure, TLS, rate limiting, server timeouts, and deployment
 require separate design and validation.
+
+## Policy decision audit events
+
+`gateway.audit.build_audit_event(policy_result, *, principal_id,
+event_id, occurred_at)` validates a policy result and returns a new
+nine-field audit event without modifying its inputs.
+
+The caller supplies trusted context: the server-owned
+`reliability-reader` identity, a canonical UUID version 4, and a valid
+UTC timestamp formatted `YYYY-MM-DDTHH:MM:SSZ`.
+
+The builder reuses the existing policy contract and reason codes.
+It rejects extra or missing result fields, incorrect types,
+inconsistent decisions, and unsupported policy or execution states
+with `AuditValidationError`.
+
+Events contain only schema version, event type, event ID, occurrence
+time, principal identity, decision, reason code, policy version, and
+execution status. Request content and credentials are not retained.
+All accepted events retain `execution_status=not_executed`.
+
+The builder performs no I/O and is not integrated into the API.
+Event generation does not provide persistence, tamper resistance,
+source authenticity, or complete request audit coverage.
 
 ## Engineering controls
 
