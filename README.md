@@ -32,8 +32,9 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-220 acceptance tests: 56 policy tests, 43 API tests,
-91 audit-builder tests, and 30 API audit-integration tests. CI covers repository hygiene, lint, formatting,
+262 acceptance tests: 56 policy tests, 43 API tests,
+91 audit-builder tests, 30 API audit-integration tests,
+and 42 audit-receiver tests. CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
 A local FastAPI endpoint authenticates one server-configured Bearer
@@ -156,6 +157,31 @@ A receiver returning successfully does not prove durable persistence.
 It may accept an event and then fail; delivery is not transactional.
 Blocking receivers have no application-level timeout or cancellation
 guarantee. No default receiver, retention, or tamper resistance is supplied.
+
+## JSON-lines audit receiver
+
+`gateway.audit_receiver.create_audit_receiver(stream)` returns a
+synchronous receiver for an explicitly supplied text stream.
+
+Each event is validated against the exact nine-field contract before
+writing. Policy field validation reuses the existing audit builder.
+Accepted events become compact JSON with sorted keys and one trailing
+newline. Inputs are not modified.
+
+A receiver-owned lock coordinates each write and flush. Coordination
+applies only to calls through the same receiver instance, not separate
+instances or processes. The receiver does not open or close the stream.
+
+The receiver requires a complete write and successful flush before
+returning `None`. Write, short-write, and flush failures propagate.
+Partial output may remain after failure; no retry or rollback is provided.
+
+Successful flush does not establish durable persistence. Stream calls
+may block. Destination access controls, retention, and operational
+configuration remain the caller's responsibility.
+
+The receiver is not automatically wired into the API. The documented
+Uvicorn command continues to run with auditing disabled.
 
 ## Engineering controls
 
