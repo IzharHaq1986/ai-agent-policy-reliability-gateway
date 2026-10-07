@@ -188,6 +188,37 @@ audit builder, and receiver. They verify event output and generic HTTP
 500 responses for write, short-write, and flush failures. These tests
 do not establish live-server behavior or durable persistence.
 
+## PostgreSQL audit schema
+
+`migrations/001_policy_decision_audit.sql` creates
+`gateway_audit.policy_decisions` with exactly the nine audit event fields.
+Constraints enforce supported values, decision/reason consistency,
+canonical UUID v4 syntax, valid UTC calendar timestamps, and unique IDs.
+
+The migration requires pre-provisioned `gateway_audit_owner`,
+`gateway_audit_writer`, and `gateway_audit_reader` roles.
+The owner is separate from application roles. Writer and reader roles
+must not inherit ownership or administrative privileges.
+
+The writer receives schema usage plus table insert and select access.
+The reader receives schema usage plus table select access.
+No audit access is granted to PUBLIC. Database connection permissions
+and login credentials are provisioned separately.
+
+Apply with `psql -X -v ON_ERROR_STOP=1` using a migration administrator
+and the numbered SQL file. The migration is transactional and deliberately
+fails on repeat application. It does not create roles or credentials.
+
+`tests/sql/test_policy_decision_audit.sql` exercises constraints and
+effective role privileges in isolated storage. Its test rows are rolled
+back. Local PostgreSQL 18.6 validation also verified failed-migration
+atomicity and preservation of data after repeat application.
+
+The existing Python CI does not execute these SQL checks. There is no
+Python database driver, persistence receiver, or API database integration.
+Schema validation does not establish durable delivery, recovery,
+retention, or production readiness.
+
 ## Engineering controls
 
 Use isolated changes, independent validation, and pull-request review.
