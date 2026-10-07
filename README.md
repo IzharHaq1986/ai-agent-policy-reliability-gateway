@@ -32,9 +32,9 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-262 acceptance tests: 56 policy tests, 43 API tests,
+275 acceptance tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
-and 42 audit-receiver tests. CI covers repository hygiene, lint, formatting,
+42 audit-receiver tests, and 13 API/receiver composition tests. CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
 A local FastAPI endpoint authenticates one server-configured Bearer
@@ -182,6 +182,11 @@ configuration remain the caller's responsibility.
 
 The receiver is not automatically wired into the API. The documented
 Uvicorn command continues to run with auditing disabled.
+
+In-process composition tests connect the real API, policy evaluator,
+audit builder, and receiver. They verify event output and generic HTTP
+500 responses for write, short-write, and flush failures. These tests
+do not establish live-server behavior or durable persistence.
 
 ## Engineering controls
 
