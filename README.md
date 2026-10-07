@@ -32,8 +32,9 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-190 acceptance tests: 56 policy tests, 43 API tests, and 91 audit tests. CI covers repository hygiene, lint, formatting,
-strict source typing, and policy/API tests with warnings treated as errors.
+220 acceptance tests: 56 policy tests, 43 API tests,
+91 audit-builder tests, and 30 API audit-integration tests. CI covers repository hygiene, lint, formatting,
+strict source typing, and the full test suite with warnings treated as errors.
 
 A local FastAPI endpoint authenticates one server-configured Bearer
 credential and evaluates requests without executing tools.
@@ -127,9 +128,34 @@ time, principal identity, decision, reason code, policy version, and
 execution status. Request content and credentials are not retained.
 All accepted events retain `execution_status=not_executed`.
 
-The builder performs no I/O and is not integrated into the API.
+The builder performs no I/O. The API can optionally deliver its events
+to a receiver supplied by trusted application code.
 Event generation does not provide persistence, tamper resistance,
 source authenticity, or complete request audit coverage.
+
+## Optional API audit delivery
+
+`create_app(audit_sink=receiver)` enables policy decision event delivery.
+The receiver must be a synchronous callable accepting one `AuditEvent`
+and returning `None`. Non-callable and asynchronous receivers are
+rejected during application creation.
+
+The application generates event identity and UTC occurrence time.
+A configured receiver runs in the Starlette thread pool and is awaited
+once before returning the normal policy response.
+
+Delivery covers completed ALLOW, DENY, and policy-level invalid-request
+evaluations. Failures before evaluation produce no policy decision event.
+Builder or receiver failures return the existing generic HTTP 500 error.
+No retry or queue is provided.
+
+`create_app()` leaves auditing disabled. The documented Uvicorn factory
+command does not configure a receiver.
+
+A receiver returning successfully does not prove durable persistence.
+It may accept an event and then fail; delivery is not transactional.
+Blocking receivers have no application-level timeout or cancellation
+guarantee. No default receiver, retention, or tamper resistance is supplied.
 
 ## Engineering controls
 
