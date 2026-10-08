@@ -217,3 +217,165 @@ def test_slow_statement_hits_statement_timeout_and_closes(database, monkeypatch)
     assert len(connections) == 1
     assert connections[0].closed
     assert stored_events(reader, supplied["event_id"]) == []
+
+
+@pytest.fixture
+def api_context(monkeypatch):
+    import secrets
+
+    from gateway import api
+
+    token = secrets.token_urlsafe(32)
+    identifier = uuid4()
+    monkeypatch.setenv("GATEWAY_API_TOKEN", token)
+    # Supply a known valid server-generated ID to locate only this test's row.
+    monkeypatch.setattr(api, "uuid4", lambda: identifier)
+    return token, str(identifier)
+
+
+def api_payload():
+    return {
+        "tool": "fixture_store",
+        "operation": "READ_ITEM",
+        "arguments": {"item_id": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "status", "decision", "reason"),
+    [
+        ({}, 200, "ALLOW", "POLICY_ALLOW"),
+        ({"tool": "other_tool"}, 200, "DENY", "UNKNOWN_TOOL"),
+        ({"operation": "WRITE_ITEM"}, 200, "DENY", "UNKNOWN_OPERATION"),
+        ({"arguments": {"item_id": 0}}, 422, "DENY", "INVALID_REQUEST"),
+    ],
+)
+def test_api_commits_matching_audit_event(
+    database, api_context, change, status, decision, reason
+):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from gateway.api import create_app
+    from gateway.audit import validate_audit_event
+
+    writer, reader = database
+    token, identifier = api_context
+    supplied = api_payload()
+    supplied.update(change)
+    app = create_app(audit_sink=create_postgresql_audit_receiver(writer))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/policy/evaluate",
+            headers={"Authorization": f"Bearer {token}"},
+            json=supplied,
+        )
+        rows = stored_events(reader, identifier)
+
+    assert len(rows) == 1
+    audit = rows[0]
+    assert validate_audit_event(audit) == audit
+    assert audit["event_id"] == identifier
+    assert audit["principal_id"] == "reliability-reader"
+    assert audit["decision"] == decision
+    assert audit["reason_code"] == reason
+    assert audit["execution_status"] == "not_executed"
+    result = {
+        key: audit[key]
+        for key in ("decision", "reason_code", "policy_version", "execution_status")
+    }
+    assert response.status_code == status
+    assert response.json() == (
+        result if status == 200 else {"error": {"code": "INVALID_REQUEST"}}
+    )
+    serialized = json.dumps(audit)
+    assert token not in serialized
+    assert set(audit) == {
+        "schema_version",
+        "event_type",
+        "event_id",
+        "occurred_at",
+        "principal_id",
+        "decision",
+        "reason_code",
+        "policy_version",
+        "execution_status",
+    }
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    [
+        ("missing_auth", 401, "UNAUTHENTICATED"),
+        ("invalid_auth", 401, "UNAUTHENTICATED"),
+        ("media", 415, "UNSUPPORTED_MEDIA_TYPE"),
+        ("size", 413, "BODY_TOO_LARGE"),
+        ("json", 422, "INVALID_REQUEST"),
+    ],
+)
+def test_api_pre_policy_failure_persists_no_event(
+    database, api_context, failure, status, code
+):
+    from fastapi.testclient import TestClient
+
+    from gateway.api import create_app
+
+    writer, reader = database
+    token, identifier = api_context
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    body = b"{}"
+    if failure == "missing_auth":
+        del headers["Authorization"]
+    elif failure == "invalid_auth":
+        headers["Authorization"] = "Bearer invalid"
+    elif failure == "media":
+        headers["Content-Type"] = "text/plain"
+    elif failure == "size":
+        body = b" " * 4097
+    elif failure == "json":
+        body = b"{"
+
+    app = create_app(audit_sink=create_postgresql_audit_receiver(writer))
+    with TestClient(app) as client:
+        response = client.post("/v1/policy/evaluate", headers=headers, content=body)
+
+    assert response.status_code == status
+    assert response.json() == {"error": {"code": code}}
+    assert stored_events(reader, identifier) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{}, {"tool": "other_tool"}, {"arguments": {"item_id": 0}}],
+)
+def test_api_real_database_permission_failure_returns_generic_500(
+    database, api_context, change
+):
+    from fastapi.testclient import TestClient
+
+    from gateway.api import create_app
+
+    _, reader = database
+    token, identifier = api_context
+    supplied = api_payload()
+    supplied.update(change)
+    # The real reader role can connect and select but cannot insert.
+    app = create_app(audit_sink=create_postgresql_audit_receiver(reader))
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/policy/evaluate",
+            headers={"Authorization": f"Bearer {token}"},
+            json=supplied,
+        )
+
+    assert response.status_code == 500
+    assert response.json() == {"error": {"code": "INTERNAL_ERROR"}}
+    assert token not in response.text
+    assert reader not in response.text
+    assert stored_events(reader, identifier) == []
