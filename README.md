@@ -217,8 +217,10 @@ effective role privileges in isolated storage. Its test rows are rolled
 back. Local PostgreSQL 18.6 validation also verified failed-migration
 atomicity and preservation of data after repeat application.
 
-The standalone SQL acceptance file is not executed by CI.
-CI runs the Python PostgreSQL integration tests against disposable storage.
+The required CI job runs the SQL acceptance file after migration and
+before the Python suite against disposable PostgreSQL storage.
+The runner requires the SQL success marker and verifies that its test rows
+were rolled back. SQL failures stop validation before Python tests run.
 Schema validation does not establish recovery, retention, or production
 readiness. The API is not configured with a database receiver by default.
 
