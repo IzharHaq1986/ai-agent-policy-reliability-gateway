@@ -150,6 +150,20 @@ def main():
                 "TO gateway_audit_writer, gateway_audit_reader;"
             )
             execute_sql((ROOT / "migrations/001_policy_decision_audit.sql").read_text())
+
+            sql_acceptance_output = execute_sql(
+                (ROOT / "tests/sql/test_policy_decision_audit.sql").read_text()
+            )
+            marker = "AUDIT_SCHEMA_SQL_ACCEPTANCE=PASS"
+            if marker not in sql_acceptance_output.splitlines():
+                raise RuntimeError("SQL acceptance success marker missing")
+            remaining_rows = execute_sql(
+                "SELECT count(*) FROM gateway_audit.policy_decisions;"
+            ).strip()
+            if remaining_rows != "0":
+                raise RuntimeError("SQL acceptance left persistent test rows")
+            print(marker)
+            print("SQL_ACCEPTANCE_TEST_ROWS=ROLLED_BACK")
             settings = execute_sql(
                 "SELECT current_setting('fsync'), "
                 "current_setting('full_page_writes'), "
