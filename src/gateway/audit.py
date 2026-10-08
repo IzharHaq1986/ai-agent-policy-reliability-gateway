@@ -26,18 +26,8 @@ _REASON_CODES = frozenset(get_args(ReasonCode))
 _UTC_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
-def build_audit_event(
-    policy_result: object,
-    *,
-    principal_id: object,
-    event_id: object,
-    occurred_at: object,
-) -> AuditEvent:
-    """Build an event from explicit trusted context and a validated result.
-
-    This function generates no identity or timestamp, performs no I/O,
-    and does not establish authenticity, persistence, or authorization.
-    """
+def validate_policy_result(policy_result: object) -> PolicyResult:
+    """Validate the existing result contract without generating an event."""
     if type(policy_result) is not dict:
         raise AuditValidationError("Invalid policy result")
     if policy_result.keys() != _RESULT_KEYS:
@@ -55,6 +45,22 @@ def build_audit_event(
         raise AuditValidationError("Unsupported policy version")
     if policy_result["execution_status"] != "not_executed":
         raise AuditValidationError("Unsupported execution status")
+    return cast(PolicyResult, policy_result)
+
+
+def build_audit_event(
+    policy_result: object,
+    *,
+    principal_id: object,
+    event_id: object,
+    occurred_at: object,
+) -> AuditEvent:
+    """Build an event from explicit trusted context and a validated result.
+
+    This function generates no identity or timestamp, performs no I/O,
+    and does not establish authenticity, persistence, or authorization.
+    """
+    result = validate_policy_result(policy_result)
 
     if type(principal_id) is not str or principal_id != "reliability-reader":
         raise AuditValidationError("Unsupported principal identity")
@@ -77,7 +83,6 @@ def build_audit_event(
     except ValueError:
         raise AuditValidationError("Invalid occurrence timestamp") from None
 
-    result = cast(PolicyResult, policy_result)
     return {
         "schema_version": 1,
         "event_type": "policy_decision",
