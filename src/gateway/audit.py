@@ -20,6 +20,7 @@ class AuditEvent(PolicyResult):
     principal_id: Literal["reliability-reader"]
 
 
+_EVENT_KEYS = frozenset(AuditEvent.__annotations__)
 _RESULT_KEYS = frozenset(PolicyResult.__annotations__)
 _REASON_CODES = frozenset(get_args(ReasonCode))
 _UTC_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -88,3 +89,26 @@ def build_audit_event(
         "policy_version": result["policy_version"],
         "execution_status": result["execution_status"],
     }
+
+
+def validate_audit_event(event: object) -> AuditEvent:
+    """Validate an exact audit event and return a fresh copy without I/O."""
+    if type(event) is not dict or event.keys() != _EVENT_KEYS:
+        raise AuditValidationError("Invalid audit event fields")
+    if type(event["schema_version"]) is not int or event["schema_version"] != 1:
+        raise AuditValidationError("Unsupported audit schema version")
+    if type(event["event_type"]) is not str or event["event_type"] != "policy_decision":
+        raise AuditValidationError("Unsupported audit event type")
+
+    validated = build_audit_event(
+        {
+            "decision": event["decision"],
+            "reason_code": event["reason_code"],
+            "policy_version": event["policy_version"],
+            "execution_status": event["execution_status"],
+        },
+        principal_id=event["principal_id"],
+        event_id=event["event_id"],
+        occurred_at=event["occurred_at"],
+    )
+    return validated

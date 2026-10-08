@@ -32,9 +32,11 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-275 acceptance tests: 56 policy tests, 43 API tests,
+308 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
-42 audit-receiver tests, and 13 API/receiver composition tests. CI covers repository hygiene, lint, formatting,
+42 JSON-lines receiver tests, 13 API/receiver composition tests,
+26 PostgreSQL receiver unit tests, and 7 PostgreSQL integration tests.
+CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
 A local FastAPI endpoint authenticates one server-configured Bearer
@@ -214,10 +216,54 @@ effective role privileges in isolated storage. Its test rows are rolled
 back. Local PostgreSQL 18.6 validation also verified failed-migration
 atomicity and preservation of data after repeat application.
 
-The existing Python CI does not execute these SQL checks. There is no
-Python database driver, persistence receiver, or API database integration.
-Schema validation does not establish durable delivery, recovery,
-retention, or production readiness.
+The standalone SQL acceptance file is not executed by CI.
+CI runs the Python PostgreSQL integration tests against disposable storage.
+Schema validation does not establish recovery, retention, or production
+readiness. The API is not configured with a database receiver by default.
+
+## PostgreSQL audit receiver
+
+`gateway.postgresql_audit_receiver.create_postgresql_audit_receiver(conninfo)`
+returns a synchronous receiver for trusted connection configuration.
+It reuses shared audit-event validation before opening a connection.
+
+Each invocation opens one connection and uses a READ COMMITTED transaction
+with parameterized SQL. It sets synchronous_commit=on, lock_timeout=2s,
+and statement_timeout=5s; connection establishment uses connect_timeout=5.
+These settings do not provide a total invocation deadline.
+
+A successful delivery returns None after commit acknowledgement and
+connection closure. An identical event ID and nine-field event is accepted
+without another row. Different content for an existing ID raises
+AuditConflictError without updating the stored event. No retries occur.
+
+Failures propagate to the caller. Cleanup attempts preserve the original
+delivery failure. A commit acknowledgement failure can leave a committed
+event; an explicit retry must reuse the original ID and content.
+Commit acknowledgement assumes correctly configured database durability.
+It does not establish backups, recovery, retention, or tamper resistance.
+
+The receiver requires the separately provisioned writer role. It does not
+create roles, apply migrations, manage credentials, or wire itself into
+the API. The documented Uvicorn factory still runs with auditing disabled.
+
+Run all tests against an isolated PostgreSQL instance:
+
+```bash
+docker pull --platform linux/amd64 \
+    docker.io/library/postgres@sha256:885953109528ad3dfc90362b1a6f50a78620b5315be19f187753d267e484dc5b
+PYTHONDONTWRITEBYTECODE=1 venv/bin/python tests/support/run_postgresql_acceptance.py
+```
+
+The runner uses a temporary volume, generated test credentials, separate
+authenticated writer and reader roles, and a loopback-only published port.
+It removes its container, volume, and temporary credential file on normal
+completion or handled failure. Forced termination can leave resources.
+
+Integration tests cover committed visibility, duplicate and conflict
+handling, concurrency, lock timeout, and a real slow-statement timeout.
+The ordinary pytest command skips these seven tests unless explicit test
+connections are supplied. The required CI job uses the isolated runner.
 
 ## Engineering controls
 

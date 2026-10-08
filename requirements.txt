@@ -1,3 +1,6 @@
 # API runtime dependencies.
 fastapi==0.142.2
 uvicorn==0.54.0
+
+# PostgreSQL audit persistence driver.
+psycopg[binary]==3.3.6

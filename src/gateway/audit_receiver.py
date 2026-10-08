@@ -5,9 +5,7 @@ from collections.abc import Callable
 from threading import Lock
 from typing import TextIO
 
-from gateway.audit import AuditEvent, AuditValidationError, build_audit_event
-
-_EVENT_KEYS = frozenset(AuditEvent.__annotations__)
+from gateway.audit import AuditEvent, validate_audit_event
 
 
 def create_audit_receiver(stream: TextIO) -> Callable[[AuditEvent], None]:
@@ -19,27 +17,7 @@ def create_audit_receiver(stream: TextIO) -> Callable[[AuditEvent], None]:
     lock = Lock()
 
     def receive(event: AuditEvent) -> None:
-        if type(event) is not dict or event.keys() != _EVENT_KEYS:
-            raise AuditValidationError("Invalid audit event fields")
-        if type(event["schema_version"]) is not int or event["schema_version"] != 1:
-            raise AuditValidationError("Unsupported audit schema version")
-        if (
-            type(event["event_type"]) is not str
-            or event["event_type"] != "policy_decision"
-        ):
-            raise AuditValidationError("Unsupported audit event type")
-
-        validated = build_audit_event(
-            {
-                "decision": event["decision"],
-                "reason_code": event["reason_code"],
-                "policy_version": event["policy_version"],
-                "execution_status": event["execution_status"],
-            },
-            principal_id=event["principal_id"],
-            event_id=event["event_id"],
-            occurred_at=event["occurred_at"],
-        )
+        validated = validate_audit_event(event)
         line = (
             json.dumps(
                 validated,

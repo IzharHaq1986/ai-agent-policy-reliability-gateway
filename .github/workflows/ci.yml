@@ -137,8 +137,16 @@ jobs:
           "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
             --cache-dir "$RUNNER_TEMP/policy-mypy-cache"
 
-      - name: Test deterministic policy
+      - name: Prepare isolated PostgreSQL image
         shell: bash
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/policy-venv/bin/python" -m pytest -q -W error
+          docker pull --platform linux/amd64 \
+            docker.io/library/postgres@sha256:885953109528ad3dfc90362b1a6f50a78620b5315be19f187753d267e484dc5b
+
+      - name: Test policy and PostgreSQL acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" \
+            tests/support/run_postgresql_acceptance.py
