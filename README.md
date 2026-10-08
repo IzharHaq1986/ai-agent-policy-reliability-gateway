@@ -32,11 +32,12 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-368 tests: 56 policy tests, 43 API tests,
+391 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
-12 API/PostgreSQL composition tests, and 48 evaluation tests.
+12 API/PostgreSQL composition tests, 48 evaluation tests,
+and 23 evaluation CLI tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -299,6 +300,36 @@ The existing pytest suite includes this evaluation gate.
 These results measure deterministic policy behavior. Synthetic instruction
 cases do not establish live-model prompt-injection resistance, groundedness,
 citation validity, or production release safety.
+
+## Evaluation command-line interface
+
+Run from the repository root with the development environment installed:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src venv/bin/python -m gateway.evaluation_cli evaluations/policy_core_v1.json
+```
+
+The command accepts exactly one dataset path and reads at most 1 MiB
+plus one byte to detect oversized input. It requires UTF-8 JSON and
+reuses the API's duplicate-key and non-finite constant rejection hooks.
+Dataset validation and evaluation reuse the existing pure runner.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Every scenario matches its expected result |
+| 1 | At least one scenario mismatches |
+| 2 | Usage, input, evaluation, or output failure |
+
+Valid evaluations write one compact JSON report with sorted keys and a
+trailing newline to stdout. Failures write a generic code to stderr:
+USAGE_ERROR, INPUT_ERROR, EVALUATION_ERROR, or OUTPUT_ERROR.
+Paths, input content, and exception details are not included in errors.
+
+The command does not modify datasets, create report files, or retry.
+An output failure can leave partial output; consumers must check the
+exit code. The byte limit does not provide an I/O timeout.
+Results measure synthetic deterministic policy behavior and do not
+establish live-model or production safety.
 
 ## Engineering controls
 

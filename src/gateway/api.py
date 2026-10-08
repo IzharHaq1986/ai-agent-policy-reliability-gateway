@@ -7,7 +7,6 @@ import re
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import NoReturn
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -16,6 +15,8 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse
 
 from gateway.audit import AuditEvent, build_audit_event
+from gateway.json_validation import reject_constant as _reject_constant
+from gateway.json_validation import unique_object as _unique_object
 from gateway.policy import evaluate_request
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
@@ -34,19 +35,6 @@ def _error(status: int, code: str) -> JSONResponse:
         status_code=status,
         headers=headers,
     )
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("Duplicate JSON key")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> NoReturn:
-    raise ValueError("Non-finite JSON number")
 
 
 def create_app(*, audit_sink: Callable[[AuditEvent], None] | None = None) -> FastAPI:
