@@ -32,10 +32,11 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-308 tests: 56 policy tests, 43 API tests,
+320 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
-26 PostgreSQL receiver unit tests, and 7 PostgreSQL integration tests.
+26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
+and 12 API/PostgreSQL composition tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -262,8 +263,17 @@ completion or handled failure. Forced termination can leave resources.
 
 Integration tests cover committed visibility, duplicate and conflict
 handling, concurrency, lock timeout, and a real slow-statement timeout.
-The ordinary pytest command skips these seven tests unless explicit test
-connections are supplied. The required CI job uses the isolated runner.
+The ordinary pytest command skips the 19 database-dependent tests unless
+explicit test connections are supplied. The required CI job uses the
+isolated runner.
+
+API/PostgreSQL composition tests verify committed events through a separate
+reader connection for ALLOW, DENY, and policy-level invalid requests.
+Pre-policy failures persist no event. Real database insertion permission
+failures return the existing generic HTTP 500 response.
+
+These are in-process HTTP tests. They do not establish live-server behavior,
+crash recovery, or production readiness. Default API auditing remains disabled.
 
 ## Engineering controls
 
