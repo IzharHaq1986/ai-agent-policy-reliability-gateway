@@ -32,11 +32,11 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-320 tests: 56 policy tests, 43 API tests,
+368 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
-and 12 API/PostgreSQL composition tests.
+12 API/PostgreSQL composition tests, and 48 evaluation tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -276,6 +276,29 @@ failures return the existing generic HTTP 500 response.
 
 These are in-process HTTP tests. They do not establish live-server behavior,
 crash recovery, or production readiness. Default API auditing remains disabled.
+
+## Deterministic policy evaluation
+
+`gateway.evaluation.evaluate_dataset(dataset)` evaluates a validated
+scenario collection against the existing deterministic policy core.
+
+`evaluations/policy_core_v1.json` defines 12 synthetic scenarios across
+six categories with explicit expected results. The runner validates the
+entire dataset before evaluating scenarios and compares all four policy
+result fields.
+
+Reports include total, passed, failed, pass rate, category counts, and
+per-scenario mismatch fields. Invalid datasets raise `EvaluationDataError`;
+unexpected evaluator failures propagate. The runner performs no I/O,
+does not modify inputs, and makes no model calls or tool invocations.
+
+Acceptance tests require every committed scenario to match its expected
+result and verify that deliberate mismatches are reported as failures.
+The existing pytest suite includes this evaluation gate.
+
+These results measure deterministic policy behavior. Synthetic instruction
+cases do not establish live-model prompt-injection resistance, groundedness,
+citation validity, or production release safety.
 
 ## Engineering controls
 
