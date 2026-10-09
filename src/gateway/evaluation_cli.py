@@ -1,9 +1,9 @@
 """Bounded command-line access to deterministic policy evaluation."""
 
 import json
-import os
 import sys
 
+from gateway.cli_output import write_stdout
 from gateway.evaluation import EvaluationDataError, evaluate_dataset
 from gateway.evaluation_input import MAX_DATASET_BYTES, load_evaluation_dataset
 
@@ -44,15 +44,8 @@ def main(argv: list[str] | None = None) -> int:
         return _fail("EVALUATION_ERROR")
 
     try:
-        sys.stdout.write(output)
-        sys.stdout.flush()
+        write_stdout(output)
     except OSError:
-        # Prevent interpreter shutdown from retrying the failed output stream.
-        try:
-            with open(os.devnull, "wb") as discard:
-                os.dup2(discard.fileno(), sys.stdout.fileno())
-        except (OSError, ValueError):
-            pass
         return _fail("OUTPUT_ERROR")
     return status
 
