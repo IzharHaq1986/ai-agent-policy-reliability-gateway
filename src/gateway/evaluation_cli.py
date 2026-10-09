@@ -3,12 +3,11 @@
 import json
 import os
 import sys
-from pathlib import Path
 
 from gateway.evaluation import EvaluationDataError, evaluate_dataset
-from gateway.json_validation import reject_constant, unique_object
+from gateway.evaluation_input import MAX_DATASET_BYTES, load_evaluation_dataset
 
-_MAX_DATASET_BYTES = 1024 * 1024
+_MAX_DATASET_BYTES = MAX_DATASET_BYTES
 
 
 def _fail(code: str) -> int:
@@ -23,15 +22,7 @@ def main(argv: list[str] | None = None) -> int:
         return _fail("USAGE_ERROR")
 
     try:
-        with Path(arguments[0]).open("rb") as stream:
-            body = stream.read(_MAX_DATASET_BYTES + 1)
-        if len(body) > _MAX_DATASET_BYTES:
-            return _fail("INPUT_ERROR")
-        dataset: object = json.loads(
-            body.decode("utf-8"),
-            object_pairs_hook=unique_object,
-            parse_constant=reject_constant,
-        )
+        _, dataset = load_evaluation_dataset(arguments[0])
     except (OSError, ValueError, RecursionError):
         return _fail("INPUT_ERROR")
 
