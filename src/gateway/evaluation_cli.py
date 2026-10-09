@@ -1,6 +1,7 @@
 """Bounded command-line access to deterministic policy evaluation."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -55,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(output)
         sys.stdout.flush()
     except OSError:
+        # Prevent interpreter shutdown from retrying the failed output stream.
+        try:
+            with open(os.devnull, "wb") as discard:
+                os.dup2(discard.fileno(), sys.stdout.fileno())
+        except (OSError, ValueError):
+            pass
         return _fail("OUTPUT_ERROR")
     return status
 

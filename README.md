@@ -32,12 +32,12 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-391 tests: 56 policy tests, 43 API tests,
+398 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
 12 API/PostgreSQL composition tests, 48 evaluation tests,
-and 23 evaluation CLI tests.
+23 evaluation CLI tests, and 7 CLI failure-path tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -327,7 +327,13 @@ Paths, input content, and exception details are not included in errors.
 
 The command does not modify datasets, create report files, or retry.
 An output failure can leave partial output; consumers must check the
-exit code. The byte limit does not provide an I/O timeout.
+exit code. After an output error, the CLI attempts to redirect stdout to
+the operating system's discard destination to prevent shutdown from
+retrying the failed stream. A real closed-pipe regression test verifies
+exit 2 with only OUTPUT_ERROR on stderr. Tests also cover write and flush
+failures and real-process usage and input errors.
+
+The byte limit does not provide an I/O timeout.
 Results measure synthetic deterministic policy behavior and do not
 establish live-model or production safety.
 
