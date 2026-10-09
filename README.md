@@ -32,13 +32,14 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-419 tests: 56 policy tests, 43 API tests,
+443 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
 12 API/PostgreSQL composition tests, 48 evaluation tests,
 23 evaluation CLI tests, 7 CLI failure-path tests,
-12 artifact-generation tests, and 9 artifact-identity tests.
+12 artifact-generation tests, 9 artifact-identity tests,
+16 artifact CLI acceptance tests, and 8 artifact CLI process tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -370,6 +371,44 @@ changes restored between checks. Dependency versions are not identified.
 Hashes and revision identifiers do not establish authenticity.
 Evidence covers synthetic deterministic policy behavior only, with no
 live-model evaluation or production safety guarantee.
+
+## Evaluation artifact command
+
+Run from a clean committed checkout with the development environment installed:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src venv/bin/python -m gateway.evaluation_artifact_cli evaluations/policy_core_v1.json
+```
+
+The command accepts exactly one dataset path and invokes the existing
+artifact generator once. It writes one compact JSON artifact with sorted
+keys and a trailing newline to stdout.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Complete artifact delivered with zero mismatches |
+| 1 | Complete artifact delivered with one or more mismatches |
+| 2 | Usage, generation, serialization, or output failure |
+
+Errors use generic stderr codes: USAGE_ERROR, INPUT_ERROR,
+CODE_IDENTITY_ERROR, EVALUATION_ERROR, SERIALIZATION_ERROR, or OUTPUT_ERROR.
+Unexpected generation failures do not expose exception details.
+Serialization completes before output begins.
+
+Both evaluation commands share stdout delivery and broken-pipe recovery.
+A full write and successful flush are required. Short writes now produce
+OUTPUT_ERROR and exit 2 in the existing evaluation CLI as well.
+
+The command does not create report files. If redirecting stdout, use a
+destination outside the checkout and inspect the exit code before accepting
+the evidence. Failed delivery can leave empty or partial output.
+Creating an untracked report inside the checkout can invalidate code
+identity checks. Flush success does not prove durable storage.
+If stderr is unavailable, error-message delivery cannot be guaranteed.
+
+The existing evaluation command retains its report format and normal
+exit behavior. Artifact evidence remains synthetic and model-free;
+Git observations are non-atomic and do not establish authenticity.
 
 ## Engineering controls
 
