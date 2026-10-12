@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-463 tests: 56 policy tests, 43 API tests,
+619 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -40,7 +40,7 @@ The repository includes a synthetic deterministic policy core and
 23 evaluation CLI tests, 7 CLI failure-path tests,
 12 artifact-generation tests, 9 artifact-identity tests,
 16 artifact CLI acceptance tests, 8 artifact CLI process tests,
-and 20 fixture simulator tests.
+20 fixture simulator tests, and 156 execution-event contract tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -433,6 +433,52 @@ or accept policy decisions as execution permission.
 The simulator is not connected to the API or gateway dispatch.
 Existing policy and audit results retain `not_executed`.
 Synthetic data does not establish facts about real systems.
+
+## Simulator execution event contract
+
+`gateway.execution_audit` provides pure `build_execution_event` and
+`validate_execution_event` functions. Both return fresh validated
+dictionaries. Invalid records raise `ExecutionAuditValidationError`
+with the generic message `Invalid execution event`.
+
+Records contain exactly: schema_version, event_type, event_id,
+execution_id, policy_event_id, occurred_at, principal_id, tool,
+operation, status, and reason_code.
+
+Schema version is the built-in integer 1. All other fields are built-in
+strings. The fixed values are simulator_execution, reliability-reader,
+fixture_store, and READ_ITEM for event type, principal, tool, and
+operation respectively. All three identifiers must be canonical
+lowercase version-4 UUIDs. Timestamps must be calendar-valid UTC values
+in YYYY-MM-DDTHH:MM:SSZ format.
+
+| Status | Reason code |
+| --- | --- |
+| started | SIMULATION_STARTED |
+| completed | SIMULATION_COMPLETED |
+| failed | SIMULATOR_ERROR |
+| failed | INVALID_RESULT |
+
+A started record describes intent before invocation, not proof that
+invocation occurred. A completed record describes a validated result.
+Failure reasons distinguish an invocation exception from invalid output.
+These meanings must be enforced by future orchestration; validation alone
+does not prove that the described activity occurred.
+
+Each record has its own event_id. Records for one attempt share an
+execution_id and reference its policy_event_id. The pure validator does
+not check cross-record relationships, ordering, or the existence of the
+referenced policy event. Absence of a terminal record leaves the outcome
+unresolved from audit evidence alone.
+
+The functions generate no identifiers or timestamps, perform no external
+access, and maintain no state. Records exclude credentials, raw requests,
+item identifiers, output payloads, and exception details.
+
+This contract does not authenticate, authorize, persist records, or
+enable dispatch. Existing policy audit receivers and the database table
+do not accept these events. Existing policy and API behavior remain
+non-executing.
 
 ## Engineering controls
 
