@@ -32,14 +32,15 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-443 tests: 56 policy tests, 43 API tests,
+463 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
 12 API/PostgreSQL composition tests, 48 evaluation tests,
 23 evaluation CLI tests, 7 CLI failure-path tests,
 12 artifact-generation tests, 9 artifact-identity tests,
-16 artifact CLI acceptance tests, and 8 artifact CLI process tests.
+16 artifact CLI acceptance tests, 8 artifact CLI process tests,
+and 20 fixture simulator tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -409,6 +410,29 @@ If stderr is unavailable, error-message delivery cannot be guaranteed.
 The existing evaluation command retains its report format and normal
 exit behavior. Artifact evidence remains synthetic and model-free;
 Git observations are non-atomic and do not establish authenticity.
+
+## Deterministic fixture simulator
+
+`gateway.fixture_simulator.simulate_read_item(item_id)` returns synthetic
+fixture data without external access. It accepts only a built-in integer
+from 1 through 1000; booleans, integer subclasses, other types, and
+out-of-range values raise `FixtureValidationError` with the generic
+message `Invalid item identifier`.
+
+For example, item 42 returns exactly:
+`{"item_id": 42, "label": "Synthetic item 42"}`.
+
+Every valid identifier has a result. Repeated calls produce equal,
+fresh dictionaries; modifying a result does not affect later calls.
+
+The component performs no network, database, filesystem, environment,
+clock, or random access. It has no persistent state or configurable
+callbacks. It does not authenticate callers, authorize requests,
+or accept policy decisions as execution permission.
+
+The simulator is not connected to the API or gateway dispatch.
+Existing policy and audit results retain `not_executed`.
+Synthetic data does not establish facts about real systems.
 
 ## Engineering controls
 
