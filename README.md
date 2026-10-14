@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-640 tests: 56 policy tests, 43 API tests,
+699 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -41,7 +41,7 @@ The repository includes a synthetic deterministic policy core and
 12 artifact-generation tests, 9 artifact-identity tests,
 16 artifact CLI acceptance tests, 8 artifact CLI process tests,
 20 fixture simulator tests, 156 execution-event contract tests,
-and 21 execution-event receiver tests.
+21 execution-event receiver tests, and 59 fixture-result tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -507,6 +507,33 @@ durable-audit requirement. It does not check cross-record relationships,
 deduplicate events, prevent replay, or enable gateway dispatch.
 
 Existing policy audit receivers and database behavior remain unchanged.
+
+## Simulator result validation
+
+`gateway.fixture_result.validate_fixture_result(result, *,
+expected_item_id=...)` checks a returned answer against an expected
+synthetic item and returns a fresh `FixtureResult` dictionary.
+
+The expected identifier must be a built-in integer from 1 through 1000.
+The result must be a built-in dictionary containing exactly item_id and
+label. Its item_id must be a built-in integer equal to the expected
+identifier. Its label must be a built-in string equal to
+`Synthetic item <expected_item_id>`.
+Booleans and subclasses of the required built-in types are rejected.
+
+Invalid expected identifiers or returned answers raise
+`FixtureResultValidationError` with the generic message
+`Invalid fixture result`. Returned data is not included in the message.
+Inputs are not modified.
+
+Acceptance establishes agreement with the expected synthetic answer.
+It does not prove simulator invocation, authenticity, authorization,
+audit persistence, or facts about real systems. Future dispatch must
+derive the expected identifier from the exact policy-approved request.
+
+The checker performs no external access, simulator invocation, or
+persistent-state changes. Existing simulator behavior is unchanged;
+gateway dispatch remains disabled.
 
 ## Engineering controls
 
