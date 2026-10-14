@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-619 tests: 56 policy tests, 43 API tests,
+640 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -40,7 +40,8 @@ The repository includes a synthetic deterministic policy core and
 23 evaluation CLI tests, 7 CLI failure-path tests,
 12 artifact-generation tests, 9 artifact-identity tests,
 16 artifact CLI acceptance tests, 8 artifact CLI process tests,
-20 fixture simulator tests, and 156 execution-event contract tests.
+20 fixture simulator tests, 156 execution-event contract tests,
+and 21 execution-event receiver tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -479,6 +480,33 @@ This contract does not authenticate, authorize, persist records, or
 enable dispatch. Existing policy audit receivers and the database table
 do not accept these events. Existing policy and API behavior remain
 non-executing.
+
+## Execution event text receiver
+
+`gateway.execution_audit_receiver.create_execution_audit_receiver(stream)`
+returns a synchronous receiver for execution events. The caller owns
+the text stream; the receiver never closes it.
+
+Each call validates the event and serializes a fresh validated copy
+before writing. Output is one compact JSON line with sorted keys and a
+trailing newline. Success requires a complete write, a built-in integer
+write count matching the line length, and a successful flush.
+The receiver returns None on success.
+
+Invalid events and serialization failures produce no output.
+Write, incomplete-write, and flush failures propagate to the caller.
+There are no automatic retries or fallback outputs. A failure can leave
+partial or complete content; the receiver does not roll back output.
+
+A per-receiver lock keeps each write-and-flush sequence together.
+It does not coordinate separate receivers or processes.
+
+Successful delivery does not prove durable storage, authenticity,
+or actual simulator execution. This receiver alone does not satisfy a
+durable-audit requirement. It does not check cross-record relationships,
+deduplicate events, prevent replay, or enable gateway dispatch.
+
+Existing policy audit receivers and database behavior remain unchanged.
 
 ## Engineering controls
 
