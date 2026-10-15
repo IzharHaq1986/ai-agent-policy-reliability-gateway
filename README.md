@@ -606,6 +606,42 @@ No storage, audit delivery, identifiers, or simulator invocation are
 introduced. Existing policy behavior remains unchanged, and gateway
 dispatch remains disabled.
 
+## Request-binding database schema
+
+Apply `migrations/002_request_bindings.sql` after migration 001 using the
+migration administrator and the existing owner, writer, and reader roles.
+The migration is transactional and intentionally not repeatable.
+
+`gateway_audit.request_bindings` contains exactly schema_version,
+policy_event_id, principal_id, tool, operation, and item_id.
+All columns are non-null. Constraints require version 1, the supported
+principal/tool/operation values, and an item identifier from 1 through 1000.
+
+The policy_event_id primary key permits one binding per policy event.
+An immediate, non-deferrable foreign key references the existing
+policy_decisions event_id. Updates and deletions do not cascade.
+
+The table is owned by gateway_audit_owner. PUBLIC receives no table
+privileges. The writer receives INSERT and SELECT; the reader receives
+SELECT only. Neither application role receives update, deletion,
+table-management, or grant authority.
+
+The foreign key establishes referenced-row existence, not an ALLOW
+decision, authentic origin, or permission to execute. A later receiver
+must validate the matching ALLOW decision and binding and persist both
+in one transaction. This schema alone does not require paired insertion.
+Existing policy-only writes remain supported.
+
+PostgreSQL column types do not preserve original Python input types;
+Python validation remains responsible for exact built-in-type checks.
+
+The isolated acceptance runner applies both migrations, runs both SQL
+acceptance suites, and verifies that both tables are empty after each
+suite rolls back. These SQL checks are separate from the 856 Python tests.
+
+No transactional receiver, execution-event storage, or gateway dispatch
+is introduced by this schema change.
+
 ## Engineering controls
 
 Use isolated changes, independent validation, and pull-request review.
