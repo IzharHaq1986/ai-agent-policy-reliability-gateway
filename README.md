@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-856 tests: 56 policy tests, 43 API tests,
+909 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -42,7 +42,8 @@ The repository includes a synthetic deterministic policy core and
 16 artifact CLI acceptance tests, 8 artifact CLI process tests,
 20 fixture simulator tests, 156 execution-event contract tests,
 21 execution-event receiver tests, 59 fixture-result tests,
-78 request-binding contract tests, and 79 request-snapshot tests.
+78 request-binding contract tests, 79 request-snapshot tests,
+45 paired-receiver unit tests, and 8 paired-receiver integration tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -637,10 +638,53 @@ Python validation remains responsible for exact built-in-type checks.
 
 The isolated acceptance runner applies both migrations, runs both SQL
 acceptance suites, and verifies that both tables are empty after each
-suite rolls back. These SQL checks are separate from the 856 Python tests.
+suite rolls back. These SQL checks are separate from the 909 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
+
+## PostgreSQL policy and binding receiver
+
+`gateway.postgresql_binding_receiver.create_postgresql_binding_receiver(conninfo)`
+returns a synchronous receiver accepting a policy event and request
+binding as two arguments. Connection configuration must come from trusted
+application setup.
+
+Before connecting, the receiver validates fresh copies of both records.
+It requires ALLOW / POLICY_ALLOW, matching policy-event identifiers,
+and matching principals. Invalid supplied records or relationships raise
+`BindingPairValidationError` with the generic message
+`Invalid policy binding pair`.
+
+Each call owns one connection and uses READ COMMITTED isolation,
+synchronous_commit=on, a five-second connection timeout, a two-second
+lock timeout, and a five-second statement timeout. These settings do not
+establish a total wall-clock deadline.
+
+Parameterized inserts save the policy event first and its binding second.
+One transaction commits both together. Pre-commit insertion failures
+trigger rollback and connection cleanup. Cleanup failures do not replace
+the original delivery failure.
+
+Both inserts are strict: existing identifiers fail even when their
+contents match. There is no duplicate repair, overwrite, automatic retry,
+or fallback. Existing policy-only records are not completed by this receiver.
+
+Success returns None after commit acknowledgement and connection close.
+A lost commit acknowledgement can leave both records saved despite a
+reported failure. A close failure after commit also propagates.
+Callers must withhold dispatch on failure and reconcile uncertain
+outcomes separately; rollback cannot undo an already completed commit.
+
+Real database tests cover visible committed pairs, duplicate rejection,
+existing policy-only records, rollback after a denied second insert,
+post-commit failures, and read-only credential rejection.
+
+Persistence does not authenticate the principal, prove actual policy
+evaluation, or grant execution permission. Future trusted orchestration
+must derive the records from the same captured request and its internally
+evaluated decision. No HTTP integration, simulator invocation, execution
+outcome storage, or replay prevention is introduced.
 
 ## Engineering controls
 
