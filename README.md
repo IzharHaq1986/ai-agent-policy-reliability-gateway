@@ -636,9 +636,10 @@ Existing policy-only writes remain supported.
 PostgreSQL column types do not preserve original Python input types;
 Python validation remains responsible for exact built-in-type checks.
 
-The isolated acceptance runner applies both migrations, runs both SQL
-acceptance suites, and verifies that both tables are empty after each
-suite rolls back. These SQL checks are separate from the 909 Python tests.
+The isolated acceptance runner applies all three migrations, runs all
+three SQL acceptance suites, and verifies that all three tables are empty
+after each suite rolls back. These SQL checks are separate from the
+909 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -685,6 +686,44 @@ evaluation, or grant execution permission. Future trusted orchestration
 must derive the records from the same captured request and its internally
 evaluated decision. No HTTP integration, simulator invocation, execution
 outcome storage, or replay prevention is introduced.
+
+## Execution-event database schema
+
+Apply `migrations/003_execution_events.sql` after migrations 001 and 002
+using the migration administrator and existing application roles.
+The migration is transactional and intentionally not repeatable.
+
+`gateway_audit.execution_events` stores the existing eleven-field
+execution-event contract. Every field is non-null. Constraints enforce
+format version 1, simulator_execution, supported principal/tool/operation
+values, canonical lowercase version-4 UUIDs, calendar-valid UTC timestamps,
+and the four permitted status/reason combinations.
+
+The event_id primary key identifies each record. An immediate,
+non-deferrable foreign key links policy_event_id to an existing request
+binding. Updates and deletions do not cascade.
+
+Two partial unique indexes permit at most one started record and at most
+one terminal record per execution_id. Completed and failed outcomes share
+the same terminal limit. One start and one terminal record may coexist.
+
+The dedicated owner owns the table. Writer access is INSERT and SELECT;
+reader access is SELECT only. PUBLIC receives no table privileges.
+Neither application role may rewrite saved records, manage the table,
+or delegate table privileges.
+
+These constraints do not enforce ALLOW, start-before-outcome ordering,
+matching policy references across an attempt, or timestamp ordering.
+They do not prove actual invocation or prevent repeated execution.
+A start without a terminal record leaves the outcome unresolved.
+
+SQL acceptance covers table metadata, references, valid and invalid
+records, nulls, duplicate identities, competing outcomes, and application
+permissions. All fixtures are rolled back.
+
+This change adds storage and tests only. No execution-event receiver,
+simulator orchestration, or HTTP integration is introduced.
+Gateway dispatch remains disabled.
 
 ## Engineering controls
 
