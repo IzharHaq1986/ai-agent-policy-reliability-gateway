@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-699 tests: 56 policy tests, 43 API tests,
+777 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -41,7 +41,8 @@ The repository includes a synthetic deterministic policy core and
 12 artifact-generation tests, 9 artifact-identity tests,
 16 artifact CLI acceptance tests, 8 artifact CLI process tests,
 20 fixture simulator tests, 156 execution-event contract tests,
-21 execution-event receiver tests, and 59 fixture-result tests.
+21 execution-event receiver tests, 59 fixture-result tests,
+and 78 request-binding contract tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -534,6 +535,38 @@ derive the expected identifier from the exact policy-approved request.
 The checker performs no external access, simulator invocation, or
 persistent-state changes. Existing simulator behavior is unchanged;
 gateway dispatch remains disabled.
+
+## Request-binding validation
+
+`gateway.request_binding` provides pure `build_request_binding` and
+`validate_request_binding` functions. Both return fresh checked
+dictionaries without modifying caller input.
+
+Records contain exactly schema_version, policy_event_id, principal_id,
+tool, operation, and item_id. The format version is the built-in integer
+1. The policy-event identifier must be a canonical lowercase version-4
+UUID. Supported context values are reliability-reader, fixture_store,
+and READ_ITEM. The item identifier must be a built-in integer from
+1 through 1000.
+
+Text fields must be built-in strings. Booleans and subclasses of the
+required built-in types are rejected. Missing fields, extra fields,
+unsupported values, and invalid supplied types raise
+`RequestBindingValidationError` with the generic message
+`Invalid request binding`.
+
+The builder accepts explicit keyword-only values and supplies the format
+version. Missing or unexpected function arguments retain Python's normal
+TypeError behavior.
+
+Acceptance checks the record's structure and supported values. It does
+not authenticate the caller, grant permission, verify the referenced
+policy event, or prove execution. Returned dictionaries remain mutable;
+this component does not implement the immutable request snapshot needed
+by future dispatch.
+
+No identifiers are generated, records persisted, or simulator calls
+performed. Existing policy, API, and audit behavior remain unchanged.
 
 ## Engineering controls
 
