@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-777 tests: 56 policy tests, 43 API tests,
+856 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -42,7 +42,7 @@ The repository includes a synthetic deterministic policy core and
 16 artifact CLI acceptance tests, 8 artifact CLI process tests,
 20 fixture simulator tests, 156 execution-event contract tests,
 21 execution-event receiver tests, 59 fixture-result tests,
-and 78 request-binding contract tests.
+78 request-binding contract tests, and 79 request-snapshot tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -567,6 +567,44 @@ by future dispatch.
 
 No identifiers are generated, records persisted, or simulator calls
 performed. Existing policy, API, and audit behavior remain unchanged.
+
+## Fixed request snapshot
+
+`gateway.request_snapshot.capture_request_snapshot(request, *,
+principal_id=...)` captures supported request values in a frozen,
+slotted `RequestSnapshot` dataclass.
+
+The snapshot contains principal_id, tool, operation, and item_id.
+Supported context values are reliability-reader, fixture_store, and
+READ_ITEM. Text values must be built-in strings; item_id must be a
+built-in integer from 1 through 1000. Direct construction validates
+these rules too.
+
+Capture requires a built-in request dictionary containing exactly tool,
+operation, and arguments, with a built-in arguments dictionary containing
+exactly item_id. Identity is supplied separately, never read from the
+request body. Invalid supplied values raise
+`RequestSnapshotValidationError` with the generic message
+`Invalid request snapshot`.
+
+The snapshot retains no caller dictionaries. Changing the original
+request after capture cannot change its stored values. Ordinary field
+assignment and deletion are blocked. `to_policy_request()` returns a
+fresh policy-shaped dictionary with fresh nested arguments on every call.
+
+Capture does not authenticate or authorize. Future integration must obtain
+identity from trusted authentication context and evaluate policy using
+the captured values. The snapshot's immutability does not establish
+permission.
+
+Frozen dataclasses prevent ordinary accidental modification, not
+deliberate bypass by privileged Python code. Capture is not atomic
+against concurrent input mutation; callers must keep input stable
+during capture.
+
+No storage, audit delivery, identifiers, or simulator invocation are
+introduced. Existing policy behavior remains unchanged, and gateway
+dispatch remains disabled.
 
 ## Engineering controls
 
