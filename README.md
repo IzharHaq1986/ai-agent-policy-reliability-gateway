@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1217 tests: 56 policy tests, 43 API tests,
+1278 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -45,15 +45,22 @@ The repository includes a synthetic deterministic policy core and
 78 request-binding contract tests, 79 request-snapshot tests,
 45 paired-receiver unit tests, 8 paired-receiver integration tests,
 52 execution-receiver unit tests, 19 execution-receiver integration tests,
-and 237 execution-result contract tests.
+237 execution-result contract tests, 44 simulator-orchestration unit tests,
+and 17 simulator-orchestration integration tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
 A local FastAPI endpoint authenticates one server-configured Bearer
 credential and evaluates requests without executing tools.
 
-Tool execution, approvals, persistence, live-model evaluations,
-production identity management, and deployment are not implemented.
+An explicit opt-in Python executor can invoke the fixed synthetic simulator
+after internal policy evaluation and required PostgreSQL audit delivery.
+Policy decisions, request bindings, and execution events have PostgreSQL
+persistence. The executor is not connected to the HTTP API or startup.
+
+Real operational tool integrations, an approval lifecycle, replay prevention,
+live-model evaluations, production identity management, and deployment
+are not implemented.
 
 This project is independent of the n8n Engineering Playground.
 Prior-project test results do not establish validation for this service.
@@ -435,7 +442,8 @@ clock, or random access. It has no persistent state or configurable
 callbacks. It does not authenticate callers, authorize requests,
 or accept policy decisions as execution permission.
 
-The simulator is not connected to the API or gateway dispatch.
+The simulator is connected only through the explicit Python executor;
+HTTP API requests do not invoke it.
 Existing policy and audit results retain `not_executed`.
 Synthetic data does not establish facts about real systems.
 
@@ -537,7 +545,7 @@ derive the expected identifier from the exact policy-approved request.
 
 The checker performs no external access, simulator invocation, or
 persistent-state changes. Existing simulator behavior is unchanged;
-gateway dispatch remains disabled.
+the HTTP API remains non-executing.
 
 ## Request-binding validation
 
@@ -606,8 +614,8 @@ against concurrent input mutation; callers must keep input stable
 during capture.
 
 No storage, audit delivery, identifiers, or simulator invocation are
-introduced. Existing policy behavior remains unchanged, and gateway
-dispatch remains disabled.
+introduced. Existing policy behavior remains unchanged, and the HTTP API
+remains non-executing.
 
 ## Request-binding database schema
 
@@ -641,7 +649,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1217 Python tests.
+1278 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -725,7 +733,7 @@ permissions. All fixtures are rolled back.
 
 This change adds storage and tests only. No execution-event receiver,
 simulator orchestration, or HTTP integration is introduced.
-Gateway dispatch remains disabled.
+The HTTP API remains non-executing.
 
 ## PostgreSQL execution-event receiver
 
@@ -771,7 +779,7 @@ relationship checks. Database constraints remain additional safeguards.
 Saved events do not prove authentication, actual policy evaluation,
 simulator invocation, or permission to execute. No simulator orchestration,
 HTTP integration, approval lifecycle, or replay prevention is introduced.
-Gateway dispatch remains disabled.
+The HTTP API remains non-executing.
 
 ## Simulator execution-result contract
 
@@ -817,8 +825,64 @@ identifiers, or invoke the simulator. It covers results for supported
 captured requests and does not replace malformed-request API responses.
 Process interruption may prevent any result from being returned.
 
-No orchestration or HTTP integration is introduced.
-Gateway dispatch remains disabled.
+This pure result component performs no orchestration or HTTP integration.
+The HTTP API remains non-executing.
+
+## Explicit synthetic simulator execution
+
+`gateway.simulator_execution.create_simulator_executor(conninfo)` returns
+a synchronous callable: `execute(request, *, principal_id=...)`.
+Configuration must come from trusted application setup. Identity must come
+from trusted authentication context; the executor does not authenticate
+credentials. Factory creation opens no database connections.
+
+Execution is limited to fixture_store / READ_ITEM and synthetic items
+1 through 1000. No per-request human approval is required for this specific
+synthetic read. This does not establish an approval lifecycle or authority
+for real tools.
+
+The executor captures one fixed request snapshot and evaluates policy
+internally. Unsupported inputs retain RequestSnapshotValidationError.
+The current snapshot accepts only the fixed supported caller, tool, and
+operation; this component does not broaden those contracts.
+Unexpected ordinary preparation failures raise SimulatorPreparationError
+with `Simulator preparation failed`.
+
+For ALLOW, it saves the decision and binding together, then saves a start
+event. Both deliveries must acknowledge success before the fixed simulator
+is called once. Its answer is validated against the captured item.
+A terminal event must be acknowledged before returning a successful answer.
+For DENY, it saves only the policy decision and never invokes the simulator.
+
+Pre-invocation delivery failures return PRE_EXECUTION_AUDIT_ERROR with
+not_invoked. Simulator exceptions and invalid answers produce corresponding
+failed events. Terminal construction or delivery failures return
+OUTCOME_AUDIT_ERROR with invoked and no answer. Backward clock movement can
+cause terminal rejection; timestamps are not silently adjusted.
+Existing policy audit records retain not_executed.
+
+Identical explicit requests are separate attempts with fresh internal
+identifiers and all gates repeated. There are no automatic retries,
+duplicate repair, resumption, or fallback. This is not replay prevention,
+idempotency, or exactly-once execution.
+
+A failed delivery can leave committed records. Missing terminal evidence
+does not prove that invocation was absent. BaseException interruptions
+propagate and may leave an unresolved attempt without a returned result.
+Manual reconciliation is required before considering recovery.
+Database and storage configuration determine power-loss durability;
+timeout settings do not establish a total execution deadline.
+
+Unit tests cover ordering, stopping rules, snapshot independence,
+preparation failures, and interruptions. Real PostgreSQL tests cover
+pre-invocation record visibility, correlated outcomes, repeated requests,
+duplicate rejection, read-only credentials, clock reversal, and injected
+insertion, commit-acknowledgement, and close failures. Denial-path tests
+use controlled internal policy substitution.
+
+This is opt-in Python composition only. No HTTP execution route or startup
+integration is introduced. Real tools and operations with external effects
+remain outside this component's scope.
 
 ## Engineering controls
 
