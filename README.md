@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-909 tests: 56 policy tests, 43 API tests,
+980 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -43,7 +43,8 @@ The repository includes a synthetic deterministic policy core and
 20 fixture simulator tests, 156 execution-event contract tests,
 21 execution-event receiver tests, 59 fixture-result tests,
 78 request-binding contract tests, 79 request-snapshot tests,
-45 paired-receiver unit tests, and 8 paired-receiver integration tests.
+45 paired-receiver unit tests, 8 paired-receiver integration tests,
+52 execution-receiver unit tests, and 19 execution-receiver integration tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -639,7 +640,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-909 Python tests.
+980 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -723,6 +724,52 @@ permissions. All fixtures are rolled back.
 
 This change adds storage and tests only. No execution-event receiver,
 simulator orchestration, or HTTP integration is introduced.
+Gateway dispatch remains disabled.
+
+## PostgreSQL execution-event receiver
+
+`gateway.postgresql_execution_receiver.create_postgresql_execution_receiver(conninfo)`
+returns a synchronous receiver accepting one untrusted execution event.
+Connection configuration must come from trusted application setup.
+
+The receiver reuses execution-event validation before connecting.
+Invalid events retain `ExecutionAuditValidationError`. Invalid connection
+configuration raises ValueError with the generic message
+`Invalid execution database configuration`.
+
+Stored context must include a matching request binding and an
+ALLOW / POLICY_ALLOW policy event. A start requires an empty attempt.
+A terminal event requires exactly one matching start and a timestamp
+equal to or later than that start. Invalid stored relationships raise
+`ExecutionRelationshipError` with `Invalid execution relationship`.
+
+Each call owns one connection and transaction. READ COMMITTED isolation,
+synchronous commit, and the existing connection, lock, and statement
+timeouts apply. These settings do not establish a total deadline.
+
+Before relationship reads, a transaction-scoped advisory lock serializes
+cooperating receiver calls for the same execution_id. Its key is derived
+from `gateway.execution_events:` followed by the canonical execution_id.
+Reads after lock acquisition observe previously committed changes.
+Hash collisions can serialize unrelated attempts; full identifiers
+remain the basis for all relationship checks.
+
+Insertion is strict. Existing identifiers or attempt states are rejected
+without repair, overwrite, automatic retry, or fallback.
+Success returns None after commit acknowledgement and connection close.
+Pre-commit failures trigger rollback and cleanup without replacing the
+original failure. Commit acknowledgement or post-commit close failures
+may report failure despite a saved event; reconcile before retrying.
+
+Real PostgreSQL tests cover committed visibility, denied and missing
+relationships, invalid attempt transitions, competing calls, lock timeout,
+read-only credentials, and injected delivery failures.
+
+Advisory locking is cooperative; direct SQL writers can bypass receiver
+relationship checks. Database constraints remain additional safeguards.
+Saved events do not prove authentication, actual policy evaluation,
+simulator invocation, or permission to execute. No simulator orchestration,
+HTTP integration, approval lifecycle, or replay prevention is introduced.
 Gateway dispatch remains disabled.
 
 ## Engineering controls
