@@ -152,12 +152,13 @@ def main():
             for migration in (  # Apply prerequisites before dependent tables.
                 "migrations/001_policy_decision_audit.sql",  # Create policy storage.
                 "migrations/002_request_bindings.sql",  # Create linked request storage.
+                "migrations/003_execution_events.sql",  # Create execution storage.
             ):  # Keep the migration order explicit.
                 execute_sql(
                     (ROOT / migration).read_text()
                 )  # Apply in this test database.
 
-            for acceptance_file, marker in (  # Run both independent SQL suites.
+            for acceptance_file, marker in (  # Run all three SQL suites.
                 (  # Preserve the existing policy-schema checks.
                     "tests/sql/test_policy_decision_audit.sql",
                     "AUDIT_SCHEMA_SQL_ACCEPTANCE=PASS",
@@ -165,6 +166,10 @@ def main():
                 (  # Add the new binding-schema checks.
                     "tests/sql/test_request_bindings.sql",
                     "REQUEST_BINDING_SQL_ACCEPTANCE=PASS",
+                ),
+                (  # Check execution-event storage and permissions.
+                    "tests/sql/test_execution_events.sql",
+                    "EXECUTION_EVENT_SQL_ACCEPTANCE=PASS",
                 ),
             ):  # Require each suite's own success marker.
                 sql_acceptance_output = execute_sql(  # Stop on any SQL failure.
@@ -174,17 +179,19 @@ def main():
                     marker not in sql_acceptance_output.splitlines()
                 ):  # Check completion.
                     raise RuntimeError("SQL acceptance success marker missing")
-                remaining_rows = execute_sql(  # Check both tables after each suite.
+                remaining_rows = execute_sql(  # Check all tables after each suite.
                     "SELECT count(*) FROM gateway_audit.policy_decisions "
                     "UNION ALL "
-                    "SELECT count(*) FROM gateway_audit.request_bindings;"
-                ).splitlines()  # Preserve both independent row counts.
-                if remaining_rows != ["0", "0"]:  # Neither table may retain test rows.
+                    "SELECT count(*) FROM gateway_audit.request_bindings "
+                    "UNION ALL "
+                    "SELECT count(*) FROM gateway_audit.execution_events;"
+                ).splitlines()  # Preserve all three row counts.
+                if remaining_rows != ["0", "0", "0"]:  # No table may retain test rows.
                     raise RuntimeError("SQL acceptance left persistent test rows")
                 print(marker)  # Report only a completed and cleaned SQL suite.
             print(
                 "SQL_ACCEPTANCE_TEST_ROWS=ROLLED_BACK"
-            )  # Confirm both tables are empty.
+            )  # Confirm all three tables are empty.
             settings = execute_sql(
                 "SELECT current_setting('fsync'), "
                 "current_setting('full_page_writes'), "
