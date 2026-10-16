@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-980 tests: 56 policy tests, 43 API tests,
+1217 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -44,7 +44,8 @@ The repository includes a synthetic deterministic policy core and
 21 execution-event receiver tests, 59 fixture-result tests,
 78 request-binding contract tests, 79 request-snapshot tests,
 45 paired-receiver unit tests, 8 paired-receiver integration tests,
-52 execution-receiver unit tests, and 19 execution-receiver integration tests.
+52 execution-receiver unit tests, 19 execution-receiver integration tests,
+and 237 execution-result contract tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -640,7 +641,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-980 Python tests.
+1217 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -770,6 +771,53 @@ relationship checks. Database constraints remain additional safeguards.
 Saved events do not prove authentication, actual policy evaluation,
 simulator invocation, or permission to execute. No simulator orchestration,
 HTTP integration, approval lifecycle, or replay prevention is introduced.
+Gateway dispatch remains disabled.
+
+## Simulator execution-result contract
+
+`gateway.execution_result` provides pure `build_execution_result` and
+`validate_execution_result` functions. Both require a separately supplied
+expected_item_id: a built-in integer from 1 through 1000.
+
+Records contain exactly schema_version, status, reason_code,
+invocation_status, policy_event_id, execution_id, and result.
+The version is the built-in integer 1. Text fields are built-in strings.
+Both identifiers must be canonical lowercase version-4 UUIDs.
+
+| Status | Reason code | Invocation status |
+| --- | --- | --- |
+| denied | POLICY_DENIED | not_invoked |
+| completed | SIMULATION_COMPLETED | invoked |
+| failed | PRE_EXECUTION_AUDIT_ERROR | not_invoked |
+| failed | SIMULATOR_ERROR | invoked |
+| failed | INVALID_RESULT | invoked |
+| failed | OUTCOME_AUDIT_ERROR | invoked |
+| failed | EXECUTION_UNCERTAIN | unknown |
+
+Only completed records contain an answer. Existing fixture-result
+validation requires the exact synthetic answer for expected_item_id.
+Every other outcome requires result=None. Returned outer dictionaries
+and completed-result payload dictionaries are fresh; input is unchanged.
+
+Invalid records or expected identifiers raise
+`ExecutionResultValidationError` with `Invalid execution result`.
+Fixture-result validation failures use that same generic error.
+The keyword-only builder supplies the version and reuses validation.
+Missing or unexpected function arguments retain Python TypeError behavior.
+
+These are checked claims, not proof of activity. Future trusted
+orchestration must establish invocation status and required audit
+acknowledgements before reporting completion. A failure after invocation
+must not be described as not_invoked. Unknown means invocation cannot be
+established from available evidence.
+
+Identifiers do not prove that saved records exist. The component does not
+authenticate, authorize, evaluate policy, access storage, generate
+identifiers, or invoke the simulator. It covers results for supported
+captured requests and does not replace malformed-request API responses.
+Process interruption may prevent any result from being returned.
+
+No orchestration or HTTP integration is introduced.
 Gateway dispatch remains disabled.
 
 ## Engineering controls
