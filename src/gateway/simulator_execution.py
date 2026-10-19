@@ -1,8 +1,9 @@
 """Explicit synthetic execution with required PostgreSQL audit delivery."""
 
+import logging  # Emit supplementary diagnostics through application setup.
 from datetime import UTC, datetime  # Generate UTC occurrence times internally.
 from typing import Protocol  # Describe the callable's keyword-only identity input.
-from uuid import uuid4  # Generate internal correlation and event identities.
+from uuid import UUID, uuid4  # Generate internal correlation and event identities.
 
 from gateway.audit import build_audit_event  # Validate internal policy decisions.
 from gateway.execution_audit import (  # Reuse the execution-event contract.
@@ -34,6 +35,51 @@ from gateway.request_snapshot import (  # Retain one fixed request throughout ex
     RequestSnapshotValidationError,
     capture_request_snapshot,
 )
+
+_LOGGER = logging.getLogger(__name__)  # Leave configuration to the application.
+_DIAGNOSTIC_LEVELS = {  # Permit only the recorded stage/outcome combinations.
+    ("snapshot", "rejected"): logging.INFO,
+    ("snapshot", "preparation_failed"): logging.WARNING,
+    ("policy_preparation", "preparation_failed"): logging.WARNING,
+    ("allow_preparation", "preparation_failed"): logging.WARNING,
+    ("denial_audit", "denied"): logging.INFO,
+    ("denial_audit", "audit_failed"): logging.WARNING,
+    ("pair_audit", "audit_failed"): logging.WARNING,
+    ("start_audit", "audit_failed"): logging.WARNING,
+    ("invocation", "simulator_failed"): logging.WARNING,
+    ("result_validation", "invalid_result"): logging.WARNING,
+    ("terminal_audit", "audit_failed"): logging.WARNING,
+    ("result", "completed"): logging.INFO,
+}
+
+
+def _diagnostic(  # Keep supplementary logging separate from required audit gates.
+    stage: str,
+    outcome: str,
+    policy_event_id: object = None,
+    execution_id: object = None,
+) -> None:
+    try:  # Ordinary diagnostic failures must not change execution behavior.
+        level = _DIAGNOSTIC_LEVELS[(stage, outcome)]  # Reject unlisted messages.
+        fields: dict[str, object] = {
+            "gateway_stage": stage,  # Include only the fixed processing stage.
+            "gateway_outcome": outcome,  # Include only the fixed outcome.
+        }
+        for key, value in (  # Never include requests, identities, or payloads.
+            ("policy_event_id", policy_event_id),
+            ("execution_id", execution_id),
+        ):
+            if type(value) is not str:  # Omit unavailable or unsupported values.
+                continue
+            try:
+                parsed = UUID(value)  # Check supplied internal identifier format.
+            except ValueError:  # Invalid identifiers are omitted, not logged.
+                continue
+            if parsed.version == 4 and str(parsed) == value:
+                fields[key] = value  # Include canonical version-4 identifiers only.
+        _LOGGER.log(level, "simulator_execution", extra=fields)  # No exception details.
+    except Exception:  # No retry, fallback output, or replacement exception.
+        pass
 
 
 class SimulatorPreparationError(ValueError):  # Identify failed internal preparation.
@@ -95,10 +141,14 @@ def create_simulator_executor(  # Configure explicit opt-in Python composition.
         try:  # Capture once before generating records or contacting PostgreSQL.
             snapshot = capture_request_snapshot(request, principal_id=principal_id)
         except RequestSnapshotValidationError:  # Preserve documented input rejection.
+            _diagnostic("snapshot", "rejected")  # No caller data is logged.
             raise
         except Exception:  # Hide unexpected ordinary preparation details.
+            _diagnostic("snapshot", "preparation_failed")
             raise SimulatorPreparationError("Simulator preparation failed") from None
 
+        policy_event_id: str | None = None  # Unavailable until generated.
+        execution_id: str | None = None  # Never use caller-selected identifiers.
         try:  # Generate identities and evaluate policy using captured values only.
             policy_event_id = str(uuid4())
             execution_id = str(uuid4())
@@ -114,6 +164,12 @@ def create_simulator_executor(  # Configure explicit opt-in Python composition.
                 )
             )
         except Exception:  # Missing or invalid preparation must prevent invocation.
+            _diagnostic(
+                "policy_preparation",
+                "preparation_failed",
+                policy_event_id,
+                execution_id,
+            )
             raise SimulatorPreparationError("Simulator preparation failed") from None
 
         def outcome(  # Build every returned result using the shared checked contract.
@@ -142,7 +198,11 @@ def create_simulator_executor(  # Configure explicit opt-in Python composition.
             except (
                 Exception
             ):  # Saved state may be uncertain; invocation is still absent.
+                _diagnostic(
+                    "denial_audit", "audit_failed", policy_event_id, execution_id
+                )
                 return outcome("failed", "PRE_EXECUTION_AUDIT_ERROR", "not_invoked")
+            _diagnostic("denial_audit", "denied", policy_event_id, execution_id)
             return outcome("denied", "POLICY_DENIED", "not_invoked")
 
         try:  # Construct prerequisites before attempting delivery.
@@ -159,22 +219,29 @@ def create_simulator_executor(  # Configure explicit opt-in Python composition.
         except (
             Exception
         ):  # Construction errors are preparation failures, not DB failures.
+            _diagnostic(
+                "allow_preparation", "preparation_failed", policy_event_id, execution_id
+            )
             raise SimulatorPreparationError("Simulator preparation failed") from None
 
+        audit_stage = "pair_audit"  # Distinguish the two existing audit gates.
         try:  # Require both acknowledged deliveries before calling the simulator.
             pair_acknowledgement = binding_receiver(policy_event, binding)
             if pair_acknowledgement is not None:
                 raise RuntimeError("Unexpected audit acknowledgement")
+            audit_stage = "start_audit"  # Pair delivery already acknowledged.
             start_acknowledgement = execution_receiver(started)
             if start_acknowledgement is not None:
                 raise RuntimeError("Unexpected audit acknowledgement")
         except Exception:  # Do not retry or invoke after uncertain pre-run delivery.
+            _diagnostic(audit_stage, "audit_failed", policy_event_id, execution_id)
             return outcome("failed", "PRE_EXECUTION_AUDIT_ERROR", "not_invoked")
 
         payload = None  # Failures must not expose a successful answer.
         try:  # Invoke exactly the fixed simulator, once, with the captured item.
             raw_result = simulate_read_item(snapshot.item_id)
         except Exception:  # Record ordinary invocation errors without their details.
+            _diagnostic("invocation", "simulator_failed", policy_event_id, execution_id)
             terminal_status = "failed"
             terminal_reason = "SIMULATOR_ERROR"
         else:
@@ -183,11 +250,17 @@ def create_simulator_executor(  # Configure explicit opt-in Python composition.
                     raw_result, expected_item_id=snapshot.item_id
                 )
             except FixtureResultValidationError:  # Reject incorrect synthetic answers.
+                _diagnostic(
+                    "result_validation", "invalid_result", policy_event_id, execution_id
+                )
                 terminal_status = "failed"
                 terminal_reason = "INVALID_RESULT"
             except (
                 Exception
             ):  # Unexpected result-checking failures cannot report success.
+                _diagnostic(
+                    "result_validation", "invalid_result", policy_event_id, execution_id
+                )
                 terminal_status = "failed"
                 terminal_reason = "INVALID_RESULT"
             else:
@@ -206,10 +279,14 @@ def create_simulator_executor(  # Configure explicit opt-in Python composition.
             if terminal_acknowledgement is not None:
                 raise RuntimeError("Unexpected audit acknowledgement")
         except Exception:  # Invocation occurred even when final recording failed.
+            _diagnostic("terminal_audit", "audit_failed", policy_event_id, execution_id)
             return outcome("failed", "OUTCOME_AUDIT_ERROR", "invoked")
 
-        return outcome(  # Release an answer only after required final acknowledgement.
+        result = outcome(  # Construct checked data after final acknowledgement.
             terminal_status, terminal_reason, "invoked", payload
         )
+        if result["status"] == "completed":  # Never log premature completion.
+            _diagnostic("result", "completed", policy_event_id, execution_id)
+        return result  # Preserve the existing caller-facing result.
 
     return execute  # Only an explicit call can begin processing.
