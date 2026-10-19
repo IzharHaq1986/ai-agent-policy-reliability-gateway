@@ -870,6 +870,7 @@ A failed delivery can leave committed records. Missing terminal evidence
 does not prove that invocation was absent. BaseException interruptions
 propagate and may leave an unresolved attempt without a returned result.
 Manual reconciliation is required before considering recovery.
+See [manual reconciliation](#manual-reconciliation-of-a-synthetic-attempt).
 Database and storage configuration determine power-loss durability;
 timeout settings do not establish a total execution deadline.
 
@@ -883,6 +884,159 @@ use controlled internal policy substitution.
 This is opt-in Python composition only. No HTTP execution route or startup
 integration is introduced. Real tools and operations with external effects
 remain outside this component's scope.
+
+## Manual reconciliation of a synthetic attempt
+
+This procedure inspects saved evidence for the fixed synthetic simulator.
+It does not resume execution, repair records, recover a withheld answer,
+or authorize a retry.
+
+### Preserve available evidence
+
+Keep the returned status, reason_code, invocation_status, policy_event_id,
+execution_id, calling code version, and failure observation time.
+Do not collect credentials, raw requests, or exception payloads.
+A returned result does not independently establish saved database contents.
+
+If either identifier is unavailable, record correlation as unresolved.
+Do not guess an attempt from item numbers or nearby timestamps.
+Preparation failure or interruption may provide no identifiers.
+
+### Inspect through the approved reader connection
+
+The responsible database engineer must identify the intended database
+and provide trusted connection configuration for gateway_audit_reader.
+Do not use writer or administrator credentials or put passwords in commands.
+
+This connection command is a template. Replace APPROVED_READER_SERVICE
+with an existing approved libpq service for the reader role. This runbook
+does not provision that service or select an operational host.
+
+```bash
+# Open the approved reader connection without loading psql startup commands.
+psql -X --set=ON_ERROR_STOP=1 --dbname='service=APPROVED_READER_SERVICE'
+```
+
+In that session, replace the three values below with the approved database
+name and the exact identifiers from the attempt. The guard deliberately
+raises an error if identity or identifier checks fail.
+On any error, inspection is incomplete: ROLLBACK or disconnect.
+Do not disable the guard to make a query succeed.
+
+```sql
+-- Supply the independently approved database name.
+\set expected_database 'REPLACE_WITH_APPROVED_DATABASE_NAME'
+-- Supply the exact policy-event identifier from this attempt.
+\set policy_event_id 'REPLACE_WITH_POLICY_EVENT_ID'
+-- Supply the exact execution identifier from this attempt.
+\set execution_id 'REPLACE_WITH_EXECUTION_ID'
+
+-- Inspect one consistent snapshot without changing saved data.
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+-- Bound each lock wait and SQL statement.
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '5s';
+-- End an abandoned transaction after thirty seconds of inactivity.
+SET LOCAL idle_in_transaction_session_timeout = '30s';
+
+-- Fail with division by zero unless all required checks pass.
+SELECT 1 / CASE
+    WHEN current_database() = :'expected_database'
+        AND current_user = 'gateway_audit_reader'
+        AND length(:'policy_event_id') = 36
+        AND :'policy_event_id' ~
+            '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        AND length(:'execution_id') = 36
+        AND :'execution_id' ~
+            '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    THEN 1 ELSE 0 END AS inspection_guard;
+
+-- Record the actual inspection context.
+SELECT current_database() AS database_name, current_user AS reader_role,
+       transaction_timestamp() AS inspection_started_at,
+       current_setting('transaction_isolation') AS isolation,
+       current_setting('transaction_read_only') AS read_only;
+
+-- Inspect the exact policy decision.
+SELECT schema_version, event_type, event_id, occurred_at, principal_id,
+       decision, reason_code, policy_version, execution_status
+FROM gateway_audit.policy_decisions
+WHERE event_id = :'policy_event_id';
+
+-- Inspect its associated request.
+SELECT schema_version, policy_event_id, principal_id, tool, operation, item_id
+FROM gateway_audit.request_bindings
+WHERE policy_event_id = :'policy_event_id';
+
+-- Check both identifiers so conflicting references remain visible.
+SELECT schema_version, event_type, event_id, execution_id, policy_event_id,
+       occurred_at, principal_id, tool, operation, status, reason_code
+FROM gateway_audit.execution_events
+WHERE execution_id = :'execution_id' OR policy_event_id = :'policy_event_id'
+ORDER BY execution_id, status, event_id
+LIMIT 101;
+
+-- Close inspection without changing saved records.
+ROLLBACK;
+```
+
+Expected context is the approved database, gateway_audit_reader,
+repeatable read, and read_only=on. An error means inspection did not finish.
+Keep the transaction short. Timeouts do not establish a total deadline.
+
+Other attempts sharing the policy reference may appear in the event query.
+Do not combine those rows with the target execution_id.
+If 101 rows appear, treat the output as potentially truncated and unresolved.
+
+### Interpret the snapshot conservatively
+
+Check exact identifiers, matching principal/tool/operation, the required
+ALLOW / POLICY_ALLOW decision, and matching start/terminal references.
+Terminal time must be equal to or later than start time.
+A policy-only DENY is a valid non-executing policy outcome.
+Database constraints alone do not enforce every receiver relationship.
+
+| Observed target records | Interpretation |
+| --- | --- |
+| No matching records | No matching evidence was visible; absence does not establish invocation outcome. |
+| Policy only | A decision was recorded; no complete execution chain is visible. |
+| ALLOW decision and binding, no start | The request link was saved; invocation is not established. |
+| Start without terminal | Intent was saved; invocation and final outcome remain unresolved from these records alone. |
+| Matching start and completed terminal | Records claim a validated answer; they do not independently prove execution or recover the answer payload. |
+| Matching start and failed terminal | Records claim SIMULATOR_ERROR or INVALID_RESULT; no successful answer is established. |
+| Missing links, conflicting references, terminal without start, or invalid ordering | Evidence conflicts with the receiver contract; preserve findings and escalate without repair. |
+
+A still-running writer may save more records after this snapshot.
+Inspection does not prove that the calling process stopped. Establish its
+lifecycle separately with the application owner; do not terminate unrelated
+processes.
+
+A trusted PRE_EXECUTION_AUDIT_ERROR / not_invoked result says this executor
+call stopped before invocation, even if pre-run records committed.
+A trusted OUTCOME_AUDIT_ERROR / invoked result says invocation occurred.
+A completed terminal can coexist with a failed returned result after lost
+commit acknowledgement or close failure. Do not rewrite that failure as
+success or release an answer the executor withheld.
+
+Stored contents remain claims whose trust depends on the writing path and
+database protection. Direct SQL writers can bypass receiver-only checks.
+Inspection proves neither authenticity nor power-loss durability.
+
+### Record findings without retrying
+
+Record identifiers, the available returned result, code version, inspection
+time, observed states, mismatches, and unresolved facts in the approved
+engineering record. Restrict access to request metadata, including item
+identifiers. Do not publish credentials or sensitive query output.
+
+Do not INSERT, UPDATE, DELETE, fabricate terminal records, reuse identifiers,
+resume the old attempt, or automatically retry.
+An empty inspection result is not permission to rerun anything.
+
+Escalate unresolved findings to the application and database engineers.
+A separately authorized new synthetic request is a new attempt with fresh
+internal identifiers and every gate repeated. It does not repair or resolve
+the previous attempt. Real tools require a separate recovery design.
 
 ## Engineering controls
 
