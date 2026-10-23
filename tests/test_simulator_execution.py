@@ -1,5 +1,6 @@
 """Unit checks for fixed simulator orchestration and stopping rules."""
 
+import logging  # Capture actual diagnostic records and logger configuration.
 from copy import deepcopy  # Preserve independent expectations.
 
 import pytest  # Supply controlled cases and expected failures.
@@ -378,3 +379,259 @@ def test_unexpected_result_validation_failure_withholds_answer(harness, monkeypa
     assert result["invocation_status"] == "invoked"
     assert result["result"] is None
     assert harness["records"][-1][1][0]["reason_code"] == "INVALID_RESULT"
+
+
+def diagnostic_records(caplog):  # Inspect only records emitted by this component.
+    records = [record for record in caplog.records if record.name == module.__name__]
+    standard = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    for record in records:
+        custom = set(record.__dict__) - standard  # Exclude standard logging metadata.
+        assert custom <= {
+            "gateway_stage",
+            "gateway_outcome",
+            "policy_event_id",
+            "execution_id",
+        }
+        assert {"gateway_stage", "gateway_outcome"} <= custom
+        assert record.msg == record.getMessage() == "simulator_execution"
+        assert record.args == ()  # Never interpolate caller data.
+        assert record.exc_info is None and record.exc_text is None
+        assert record.stack_info is None  # Never attach exception or stack details.
+        for key in ("policy_event_id", "execution_id"):
+            if key in custom:
+                value = record.__dict__[key]
+                parsed = module.UUID(value)  # Validate the emitted tracking format.
+                assert parsed.version == 4 and str(parsed) == value
+    return records
+
+
+def test_diagnostic_completion_has_matching_ids_and_no_payload(harness, caplog):
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        result = run()
+    records = diagnostic_records(caplog)
+    assert len(records) == 1  # Successful intermediate stages stay quiet.
+    record = records[0]
+    assert record.levelno == logging.INFO
+    assert (record.gateway_stage, record.gateway_outcome) == ("result", "completed")
+    assert record.policy_event_id == result["policy_event_id"]
+    assert record.execution_id == result["execution_id"]
+    assert "Synthetic item" not in caplog.text
+    assert "reliability-reader" not in caplog.text
+    assert CONNINFO not in caplog.text
+
+
+def test_diagnostic_rejection_excludes_caller_claims(harness, caplog):
+    private = "PRIVATE_CALLER_SENTINEL"
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        with pytest.raises(RequestSnapshotValidationError):
+            module.create_simulator_executor(CONNINFO)(request(), principal_id=private)
+    records = diagnostic_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.INFO
+    assert (records[0].gateway_stage, records[0].gateway_outcome) == (
+        "snapshot",
+        "rejected",
+    )
+    assert "policy_event_id" not in records[0].__dict__
+    assert "execution_id" not in records[0].__dict__
+    assert private not in repr(records[0].__dict__)
+    assert harness["calls"] == []
+
+
+@pytest.mark.parametrize(
+    "dependency,stage",
+    [
+        ("capture_request_snapshot", "snapshot"),
+        ("evaluate_request", "policy_preparation"),
+        ("build_request_binding", "allow_preparation"),
+    ],
+)
+def test_diagnostic_preparation_failure_has_safe_stage(
+    harness, monkeypatch, caplog, dependency, stage
+):
+    def fail(*args, **kwargs):  # Supply distinctive details that must remain private.
+        raise RuntimeError("PRIVATE_PREPARATION_SENTINEL")
+
+    monkeypatch.setattr(module, dependency, fail)
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        with pytest.raises(module.SimulatorPreparationError):
+            run()
+    records = diagnostic_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert (records[0].gateway_stage, records[0].gateway_outcome) == (
+        stage,
+        "preparation_failed",
+    )
+    assert "PRIVATE_PREPARATION_SENTINEL" not in repr(records[0].__dict__)
+    assert "simulate" not in harness["calls"]
+
+
+@pytest.mark.parametrize(
+    "step,stage",
+    [
+        ("policy_audit", "denial_audit"),
+        ("pair", "pair_audit"),
+        ("start", "start_audit"),
+        ("terminal", "terminal_audit"),
+    ],
+)
+@pytest.mark.parametrize("fault", ["failure", "bad_ack"])
+def test_diagnostic_audit_failure_identifies_exact_boundary(
+    harness, caplog, step, stage, fault
+):
+    harness["denied"] = step == "policy_audit"
+    harness[fault] = step
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        result = run()
+    records = diagnostic_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert (records[0].gateway_stage, records[0].gateway_outcome) == (
+        stage,
+        "audit_failed",
+    )
+    assert records[0].policy_event_id == result["policy_event_id"]
+    assert records[0].execution_id == result["execution_id"]
+    assert "private delivery details" not in repr(records[0].__dict__)
+    assert result["result"] is None
+    expected_invocations = 1 if step == "terminal" else 0
+    assert harness["calls"].count("simulate") == expected_invocations
+
+
+def test_diagnostic_acknowledged_denial_is_info(harness, caplog):
+    harness["denied"] = True
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        result = run()
+    records = diagnostic_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.INFO
+    assert (records[0].gateway_stage, records[0].gateway_outcome) == (
+        "denial_audit",
+        "denied",
+    )
+    assert result["status"] == "denied"
+    assert "simulate" not in harness["calls"]
+
+
+@pytest.mark.parametrize(
+    "failure,stage,outcome",
+    [
+        ("simulate", "invocation", "simulator_failed"),
+        ("invalid_result", "result_validation", "invalid_result"),
+    ],
+)
+def test_diagnostic_tool_failure_excludes_private_details(
+    harness, caplog, failure, stage, outcome
+):
+    if failure == "simulate":
+        harness["failure"] = "simulate"
+    else:
+        harness["raw_result"] = {"PRIVATE_OUTPUT_SENTINEL": "private"}
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        result = run()
+    records = diagnostic_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert (records[0].gateway_stage, records[0].gateway_outcome) == (stage, outcome)
+    assert "private simulator details" not in repr(records[0].__dict__)
+    assert "PRIVATE_OUTPUT_SENTINEL" not in repr(records[0].__dict__)
+    assert result["invocation_status"] == "invoked" and result["result"] is None
+
+
+def test_diagnostic_preserves_both_tool_and_terminal_failures(
+    harness, monkeypatch, caplog
+):
+    harness["failure"] = "terminal"
+
+    def fail(item_id):
+        harness["calls"].append("simulate")
+        raise RuntimeError("PRIVATE_TOOL_SENTINEL")
+
+    monkeypatch.setattr(module, "simulate_read_item", fail)
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        result = run()
+    records = diagnostic_records(caplog)
+    assert [(record.gateway_stage, record.gateway_outcome) for record in records] == [
+        ("invocation", "simulator_failed"),
+        ("terminal_audit", "audit_failed"),
+    ]
+    assert all(record.levelno == logging.WARNING for record in records)
+    assert result["reason_code"] == "OUTCOME_AUDIT_ERROR"
+    assert harness["calls"].count("simulate") == 1
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        None,
+        True,
+        42,
+        "",
+        "PRIVATE_IDENTIFIER_SENTINEL",
+        "110E8400-e29b-41d4-a716-446655440000",
+    ],
+)
+def test_diagnostic_omits_invalid_identifiers(caplog, identifier):
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        module._diagnostic("result", "completed", identifier, identifier)
+    records = diagnostic_records(caplog)
+    assert len(records) == 1
+    assert "policy_event_id" not in records[0].__dict__
+    assert "execution_id" not in records[0].__dict__
+
+
+@pytest.mark.parametrize("failure", [None, "pair", "start", "terminal"])
+def test_ordinary_logging_failure_preserves_execution_behavior(
+    harness, monkeypatch, failure
+):
+    harness["failure"] = failure
+    attempts = []
+
+    def fail_log(*args, **kwargs):  # Break diagnostic emission, not audit delivery.
+        attempts.append(True)
+        raise RuntimeError("PRIVATE_LOGGING_SENTINEL")
+
+    monkeypatch.setattr(module._LOGGER, "log", fail_log)
+    result = run()
+    assert attempts == [True]  # Never retry diagnostic emission.
+    if failure is None:
+        assert result["status"] == "completed"
+        assert harness["calls"] == ["policy", "pair", "start", "simulate", "terminal"]
+    elif failure == "terminal":
+        assert result["reason_code"] == "OUTCOME_AUDIT_ERROR"
+        assert result["invocation_status"] == "invoked"
+        assert harness["calls"].count("simulate") == 1
+    else:
+        assert result["reason_code"] == "PRE_EXECUTION_AUDIT_ERROR"
+        assert result["invocation_status"] == "not_invoked"
+        assert "simulate" not in harness["calls"]
+
+
+def test_logging_failure_does_not_replace_preparation_error(harness, monkeypatch):
+    harness["failure"] = "policy"
+
+    def fail_log(*args, **kwargs):
+        raise RuntimeError("PRIVATE_LOGGING_SENTINEL")
+
+    monkeypatch.setattr(module._LOGGER, "log", fail_log)
+    with pytest.raises(
+        module.SimulatorPreparationError, match="^Simulator preparation failed$"
+    ):
+        run()
+    assert harness["calls"] == ["policy"]
+
+
+def test_executor_does_not_configure_handlers_or_levels(harness):
+    root = logging.getLogger()
+    before = (
+        tuple(root.handlers),
+        root.level,
+        tuple(module._LOGGER.handlers),
+        module._LOGGER.level,
+        module._LOGGER.propagate,
+    )
+    run()  # Ordinary execution must not configure global or module logging.
+    after = (
+        tuple(root.handlers),
+        root.level,
+        tuple(module._LOGGER.handlers),
+        module._LOGGER.level,
+        module._LOGGER.propagate,
+    )
+    assert after == before
