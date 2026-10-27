@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1336 tests: 56 policy tests, 43 API tests,
+1450 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -48,7 +48,8 @@ The repository includes a synthetic deterministic policy core and
 237 execution-result contract tests, 73 simulator-orchestration unit tests,
 17 simulator-orchestration integration tests, 15 API-startup unit tests,
 7 API-startup PostgreSQL integration tests,
-and 7 audited API real-process tests.
+7 audited API real-process tests,
+and 114 synthetic provenance contract tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -732,7 +733,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1336 Python tests.
+1450 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -1170,6 +1171,59 @@ Escalate unresolved findings to the application and database engineers.
 A separately authorized new synthetic request is a new attempt with fresh
 internal identifiers and every gate repeated. It does not repair or resolve
 the previous attempt. Real tools require a separate recovery design.
+
+## Synthetic fixture-result provenance
+
+`gateway.fixture_provenance` provides pure `build_fixture_provenance`
+and `validate_fixture_provenance` functions.
+Both require a supplied answer and a separately supplied expected_item_id.
+They reuse existing fixture-result validation to require the exact
+synthetic answer for a built-in integer item identifier from 1 through 1000.
+
+The builder accepts
+`build_fixture_provenance(result, *, expected_item_id, observed_at)`.
+The validator accepts
+`validate_fixture_provenance(provenance, *, result, expected_item_id)`.
+Both return fresh metadata dictionaries without modifying inputs.
+
+Records contain exactly schema_version, source_type, source_id,
+source_version, observed_at, result_sha256, and permitted_use.
+The supported version is the built-in integer 1.
+All other fields must be built-in strings; subclasses are rejected.
+
+Supported labels are synthetic_fixture, synthetic-fixture-v1, and
+synthetic_demonstration_only. The source identifier must be exactly
+`fixture_store:READ_ITEM:<expected_item_id>` without zero padding.
+
+The supplied observation time must use calendar-valid
+`YYYY-MM-DDTHH:MM:SSZ` text with whole UTC seconds and year 0001 through 9999.
+The component does not read the clock, establish when retrieval occurred,
+or enforce freshness.
+
+The digest is lowercase SHA-256 over UTF-8 bytes of the freshly validated
+answer serialized with sorted keys, compact separators, ensure_ascii=True,
+and allow_nan=False. The validator recomputes it and requires exact agreement.
+Dictionary insertion order does not change the fingerprint.
+
+Invalid metadata, answers, expected identifiers, or observation times raise
+`FixtureProvenanceValidationError` with `Invalid fixture provenance`.
+Underlying fixture-validation and timestamp-parsing details are suppressed.
+Missing or unexpected function arguments retain normal Python TypeError.
+
+This is a standalone synthetic metadata contract, not authenticated
+provenance. Source and version labels remain claims; the intended-use
+label does not enforce authorization. A digest is not a signature.
+Predictable synthetic answers and matching metadata can be recreated
+without invoking the simulator.
+
+Acceptance does not prove invocation, audit persistence, authentic origin,
+permission, real-world truth, or resistance to deliberate forgery.
+Item identity and fingerprints still require appropriate access controls.
+
+No external access, clock reads, generated identifiers, simulator calls,
+storage, or dependency changes are introduced.
+Existing execution results, HTTP behavior, audit records, and authorization
+gates are unchanged. No integration into those components is added.
 
 ## Engineering controls
 
