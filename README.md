@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1329 tests: 56 policy tests, 43 API tests,
+1336 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -47,7 +47,8 @@ The repository includes a synthetic deterministic policy core and
 52 execution-receiver unit tests, 19 execution-receiver integration tests,
 237 execution-result contract tests, 73 simulator-orchestration unit tests,
 17 simulator-orchestration integration tests, 15 API-startup unit tests,
-and 7 API-startup PostgreSQL integration tests.
+7 API-startup PostgreSQL integration tests,
+and 7 audited API real-process tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -177,6 +178,38 @@ was saved. Existing receiver timeout and durability limitations apply.
 This factory provisions no credentials, roles, migrations, or database.
 It adds no readiness endpoint, deployment configuration, or simulator
 integration. HTTP policy responses retain not_executed.
+
+### Real-process startup acceptance
+
+`tests/test_api_startup_process.py` exercises the actual Uvicorn factory
+in a separate process through real loopback HTTP connections.
+The existing isolated PostgreSQL acceptance runner discovers these tests
+automatically; no separate service setup or CI command is required.
+
+The seven cases cover ALLOW, unknown-tool DENY, policy-invalid input,
+missing authentication, and database write-permission failure across
+three policy outcomes. A separate reader checks committed audit evidence.
+Policy records retain not_executed.
+
+The tests reserve an operating-system-selected loopback port and pass
+the socket to the child process. Startup observation, HTTP operations,
+and child shutdown have bounded waits. Test cleanup stops and reaps
+only the server process it created.
+
+Database identity and application roles are checked before test activity.
+The child receives controlled configuration and a fresh synthetic API
+credential. Raw server output stays in a private temporary capture and
+is not printed. Database-dependent cases skip when explicit test DSNs
+are absent; the required isolated acceptance runner supplies them.
+
+Record correlation uses before/after event identities in the dedicated
+serial test database. These checks require no concurrent external writers;
+unexpected additional records fail instead of being attributed by guesswork.
+
+Passing these tests establishes the exercised local startup, HTTP, and
+persistence behavior. It does not establish production readiness,
+capacity, recovery, authenticity, or power-loss durability.
+No application behavior, CI configuration, or tool authority is changed.
 
 ## Policy decision audit events
 
@@ -699,7 +732,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1329 Python tests.
+1336 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
