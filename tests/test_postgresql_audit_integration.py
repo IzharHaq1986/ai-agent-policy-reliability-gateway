@@ -379,3 +379,89 @@ def test_api_real_database_permission_failure_returns_generic_500(
     assert token not in response.text
     assert reader not in response.text
     assert stored_events(reader, identifier) == []
+
+
+@pytest.mark.parametrize(
+    ("change", "status", "decision", "reason"),
+    [
+        ({}, 200, "ALLOW", "POLICY_ALLOW"),  # Record an allowed request.
+        ({"tool": "other_tool"}, 200, "DENY", "UNKNOWN_TOOL"),  # Record denial.
+        ({"operation": "WRITE_ITEM"}, 200, "DENY", "UNKNOWN_OPERATION"),
+        ({"arguments": {"item_id": 0}}, 422, "DENY", "INVALID_REQUEST"),
+    ],
+)
+def test_startup_factory_persists_decision(
+    database, api_context, monkeypatch, change, status, decision, reason
+):  # Exercise real delivery through the new startup factory.
+    from fastapi.testclient import TestClient  # Call the existing HTTP endpoint.
+
+    from gateway.api_startup import create_postgresql_app  # Use explicit startup.
+    from gateway.audit import validate_audit_event  # Independently check saved data.
+
+    writer, reader = database  # Require the verified isolated database roles.
+    token, identifier = api_context  # Reuse a unique controlled event identity.
+    monkeypatch.setenv("GATEWAY_AUDIT_CONNINFO", writer)  # Configure real delivery.
+    supplied = api_payload()  # Build an existing supported request.
+    supplied.update(change)  # Exercise the selected policy outcome.
+
+    with TestClient(create_postgresql_app()) as client:  # Use actual composition.
+        response = client.post(
+            "/v1/policy/evaluate",  # Preserve the existing policy route.
+            headers={"Authorization": f"Bearer {token}"},  # Authenticate normally.
+            json=supplied,  # Send the selected request.
+        )
+        rows = stored_events(reader, identifier)  # Read from a separate connection.
+
+    assert response.status_code == status  # Preserve the expected HTTP behavior.
+    assert len(rows) == 1  # Require exactly one committed event for this request.
+    audit = rows[0]  # Inspect the saved event independently of the response.
+    assert validate_audit_event(audit) == audit  # Enforce the existing audit contract.
+    assert audit["event_id"] == identifier  # Check exact correlation.
+    assert audit["principal_id"] == "reliability-reader"  # Preserve trusted identity.
+    assert audit["decision"] == decision  # Match the evaluated decision.
+    assert audit["reason_code"] == reason  # Match its explanation.
+    assert audit["execution_status"] == "not_executed"  # Keep HTTP non-executing.
+    result = {
+        key: audit[key]  # Derive the expected public decision from stored evidence.
+        for key in ("decision", "reason_code", "policy_version", "execution_status")
+    }
+    assert response.json() == (
+        result if status == 200 else {"error": {"code": "INVALID_REQUEST"}}
+    )  # Preserve both valid-decision and invalid-input response shapes.
+    assert token not in str(audit)  # Exclude the API credential from stored content.
+    assert writer not in response.text  # Do not expose connection configuration.
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{}, {"tool": "other_tool"}, {"arguments": {"item_id": 0}}],
+)
+def test_startup_factory_rejects_database_write_failure(
+    database, api_context, monkeypatch, change
+):  # Check real permission failure across allowed, denied, and invalid requests.
+    from fastapi.testclient import TestClient  # Observe the HTTP error response.
+
+    from gateway.api_startup import create_postgresql_app  # Use the new factory.
+
+    _, reader = database  # Use verified credentials that cannot insert records.
+    token, identifier = api_context  # Locate only this test's possible event.
+    monkeypatch.setenv(
+        "GATEWAY_AUDIT_CONNINFO", reader
+    )  # Supply valid read-only setup.
+    supplied = api_payload()  # Start with the existing request format.
+    supplied.update(change)  # Select the policy outcome under test.
+
+    with TestClient(
+        create_postgresql_app(), raise_server_exceptions=False
+    ) as client:  # Application creation does not establish write permission.
+        response = client.post(
+            "/v1/policy/evaluate",  # Exercise the normal evaluation route.
+            headers={"Authorization": f"Bearer {token}"},  # Authenticate normally.
+            json=supplied,  # Attempt an evaluated request.
+        )
+
+    assert response.status_code == 500  # Withhold the normal decision response.
+    assert response.json() == {"error": {"code": "INTERNAL_ERROR"}}  # Hide details.
+    assert token not in response.text  # Protect the authentication credential.
+    assert reader not in response.text  # Protect database configuration.
+    assert stored_events(reader, identifier) == []  # Confirm insertion was denied.
