@@ -314,3 +314,226 @@ def test_backward_clock_does_not_force_terminal_acceptance(database, monkeypatch
     _, _, events = stored(reader, result["policy_event_id"])
     assert [row["status"] for row in events] == ["started"]
     assert events[0]["occurred_at"] == "2026-10-16T10:01:00Z"
+
+
+def test_evidence_executor_returns_correlated_completion(database, monkeypatch):
+    from gateway import simulator_evidence as evidence_module  # Use real composition.
+    from gateway.execution_evidence import validate_execution_evidence  # Check output.
+
+    writer, reader = database  # Require verified isolated database roles.
+    actual_simulator = module.simulate_read_item  # Retain the genuine fixed simulator.
+    invocations = []  # Detect repeated execution.
+    observations = []  # Establish observation after the simulator returned.
+
+    def simulate(item_id):  # Count calls without replacing genuine simulator behavior.
+        invocations.append(item_id)
+        return actual_simulator(item_id)
+
+    def observe():  # Supply a fixed observation claim after underlying execution.
+        observations.append(list(invocations))
+        return "2026-10-27T14:00:00Z"
+
+    monkeypatch.setattr(module, "simulate_read_item", simulate)
+    monkeypatch.setattr(evidence_module, "_now", observe)
+    candidate = request()  # Preserve caller-owned input for comparison.
+    original = deepcopy(candidate)
+    evidence = evidence_module.create_simulator_evidence_executor(writer)(
+        candidate, principal_id="reliability-reader"
+    )
+    assert evidence == validate_execution_evidence(evidence, expected_item_id=42)
+    result = evidence["execution_result"]  # Inspect the underlying checked result.
+    assert result["status"] == "completed"
+    assert result["result"] == {"item_id": 42, "label": "Synthetic item 42"}
+    assert evidence["provenance"]["source_id"] == "fixture_store:READ_ITEM:42"
+    assert evidence["provenance"]["observed_at"] == "2026-10-27T14:00:00Z"
+    assert invocations == [42] and observations == [
+        [42]
+    ]  # Execute once before packaging.
+    assert candidate == original  # Preserve the supplied request.
+    policies, bindings, events = stored(reader, result["policy_event_id"])
+    assert len(policies) == len(bindings) == 1  # Require independently visible records.
+    assert policies[0]["decision"] == "ALLOW"
+    assert policies[0]["execution_status"] == "not_executed"
+    assert bindings[0]["item_id"] == 42
+    assert [row["status"] for row in events] == ["completed", "started"]
+    assert all(row["execution_id"] == result["execution_id"] for row in events)
+
+
+def test_evidence_executor_preserves_real_denial(database, monkeypatch):
+    from gateway import simulator_evidence as evidence_module  # Exercise the wrapper.
+
+    writer, reader = database
+
+    def deny(*args, **kwargs):  # Exercise denial through controlled internal policy.
+        return {
+            "decision": "DENY",
+            "reason_code": "NOT_AUTHORIZED",
+            "policy_version": "policy-core-v1",
+            "execution_status": "not_executed",
+        }
+
+    def forbidden(*args, **kwargs):  # Denial must reach neither simulator nor clock.
+        pytest.fail("Denied evidence request reached an unsupported stage")
+
+    monkeypatch.setattr(module, "evaluate_request", deny)
+    monkeypatch.setattr(module, "simulate_read_item", forbidden)
+    monkeypatch.setattr(evidence_module, "_now", forbidden)
+    evidence = evidence_module.create_simulator_evidence_executor(writer)(
+        request(), principal_id="reliability-reader"
+    )
+    result = evidence["execution_result"]
+    assert result["status"] == "denied" and result["invocation_status"] == "not_invoked"
+    assert result["result"] is None and evidence["provenance"] is None
+    policies, bindings, events = stored(reader, result["policy_event_id"])
+    assert len(policies) == 1 and policies[0]["decision"] == "DENY"
+    assert bindings == events == []  # Denial must create no execution records.
+
+
+@pytest.mark.parametrize("failure", ["exception", "invalid_result"])
+def test_evidence_executor_preserves_real_simulator_failure(
+    database, monkeypatch, failure
+):
+    from gateway import simulator_evidence as evidence_module  # Keep real audit SQL.
+
+    writer, reader = database
+    invocations = []  # Detect retries at the simulator boundary.
+
+    def simulate(item_id):  # Inject only the selected tool-boundary failure.
+        invocations.append(item_id)
+        if failure == "exception":
+            raise RuntimeError("private simulator details")
+        return {"item_id": 43, "label": "Synthetic item 43"}
+
+    def forbidden():  # Unsuccessful outcomes must not read an observation time.
+        pytest.fail("Failed outcome attempted a provenance clock read")
+
+    monkeypatch.setattr(module, "simulate_read_item", simulate)
+    monkeypatch.setattr(evidence_module, "_now", forbidden)
+    evidence = evidence_module.create_simulator_evidence_executor(writer)(
+        request(), principal_id="reliability-reader"
+    )
+    result = evidence["execution_result"]
+    reason = "SIMULATOR_ERROR" if failure == "exception" else "INVALID_RESULT"
+    assert result["status"] == "failed" and result["reason_code"] == reason
+    assert result["invocation_status"] == "invoked"
+    assert result["result"] is None and evidence["provenance"] is None
+    assert invocations == [42]  # The wrapper must not repeat failed execution.
+    _, _, events = stored(reader, result["policy_event_id"])
+    assert [row["status"] for row in events] == ["failed", "started"]
+    assert events[0]["reason_code"] == reason
+
+
+def test_evidence_executor_read_only_database_prevents_invocation(
+    database, monkeypatch
+):
+    from gateway import (
+        simulator_evidence as evidence_module,
+    )  # Use real permission checks.
+
+    _, reader = database
+
+    def forbidden(*args, **kwargs):  # Audit failure must stop before invocation.
+        pytest.fail("Pre-execution failure reached simulator or provenance clock")
+
+    monkeypatch.setattr(module, "simulate_read_item", forbidden)
+    monkeypatch.setattr(evidence_module, "_now", forbidden)
+    evidence = evidence_module.create_simulator_evidence_executor(reader)(
+        request(), principal_id="reliability-reader"
+    )
+    result = evidence["execution_result"]
+    assert result["reason_code"] == "PRE_EXECUTION_AUDIT_ERROR"
+    assert result["invocation_status"] == "not_invoked"
+    assert result["result"] is None and evidence["provenance"] is None
+    assert stored(reader, result["policy_event_id"]) == ([], [], [])
+
+
+@pytest.mark.parametrize("target", ["pair", "start", "terminal"])
+def test_evidence_executor_preserves_lost_audit_acknowledgement(
+    database, monkeypatch, target
+):
+    from gateway import simulator_evidence as evidence_module  # Exercise composition.
+
+    writer, reader = database
+    connections = []  # Verify delivery stops without reconnecting.
+    invocations = []  # Establish actual invocation in this test.
+    actual_simulator = module.simulate_read_item
+
+    def connect(*args, **kwargs):  # Reuse real committed-data fault injection.
+        connection = REAL_CONNECT(*args, **kwargs)
+        connections.append(connection)
+        return OrchestrationFaultConnection(connection, target, "commit_ack")
+
+    def simulate(item_id):  # Count genuine simulator calls.
+        invocations.append(item_id)
+        return actual_simulator(item_id)
+
+    def forbidden():  # Failed execution outcomes must have no provenance observation.
+        pytest.fail("Audit failure reached provenance clock")
+
+    with monkeypatch.context() as patch:  # Restore driver access before inspection.
+        patch.setattr(psycopg, "connect", connect)
+        patch.setattr(module, "simulate_read_item", simulate)
+        patch.setattr(evidence_module, "_now", forbidden)
+        evidence = evidence_module.create_simulator_evidence_executor(writer)(
+            request(), principal_id="reliability-reader"
+        )
+
+    result = evidence["execution_result"]
+    assert result["status"] == "failed" and result["result"] is None
+    assert evidence["provenance"] is None
+    assert len(connections) == {"pair": 1, "start": 2, "terminal": 3}[target]
+    assert all(connection.closed for connection in connections)
+    invoked = target == "terminal"  # Only terminal recording follows invocation.
+    assert invocations == ([42] if invoked else [])
+    assert result["invocation_status"] == ("invoked" if invoked else "not_invoked")
+    assert result["reason_code"] == (
+        "OUTCOME_AUDIT_ERROR" if invoked else "PRE_EXECUTION_AUDIT_ERROR"
+    )
+    policies, bindings, events = stored(reader, result["policy_event_id"])
+    assert (
+        len(policies) == len(bindings) == 1
+    )  # Lost acknowledgement can follow commit.
+    expected = {
+        "pair": [],
+        "start": ["started"],
+        "terminal": ["completed", "started"],
+    }
+    assert [row["status"] for row in events] == expected[target]
+
+
+@pytest.mark.parametrize("boundary", ["clock", "builder"])
+def test_evidence_packaging_failure_leaves_completed_records(
+    database, monkeypatch, boundary
+):
+    from gateway import simulator_evidence as evidence_module  # Test post-run failures.
+
+    writer, reader = database
+    invocations = []  # Establish no second execution after packaging fails.
+    actual_simulator = module.simulate_read_item
+
+    def simulate(item_id):  # Preserve genuine simulator behavior.
+        invocations.append(item_id)
+        return actual_simulator(item_id)
+
+    def fail(*args, **kwargs):  # Fail only observation or envelope preparation.
+        raise RuntimeError("private packaging details")
+
+    monkeypatch.setattr(module, "simulate_read_item", simulate)
+    target = "_now" if boundary == "clock" else "build_execution_evidence"
+    monkeypatch.setattr(evidence_module, target, fail)
+    with pytest.raises(evidence_module.SimulatorEvidenceError) as caught:
+        evidence_module.create_simulator_evidence_executor(writer)(
+            request(), principal_id="reliability-reader"
+        )
+
+    error = caught.value
+    assert str(error) == "Simulator evidence preparation failed"
+    assert error.__suppress_context__ and error.invocation_status == "invoked"
+    assert set(vars(error)) == {"policy_event_id", "execution_id", "invocation_status"}
+    assert invocations == [42]  # Packaging failure is not permission to rerun.
+    policies, bindings, events = stored(reader, error.policy_event_id)
+    assert (
+        len(policies) == len(bindings) == 1
+    )  # Already committed records remain saved.
+    assert [row["status"] for row in events] == ["completed", "started"]
+    assert all(row["execution_id"] == error.execution_id for row in events)

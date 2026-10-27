@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1524 tests: 56 policy tests, 43 API tests,
+1568 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -50,7 +50,8 @@ The repository includes a synthetic deterministic policy core and
 7 API-startup PostgreSQL integration tests,
 7 audited API real-process tests,
 114 synthetic provenance contract tests,
-and 74 execution-evidence contract tests.
+74 execution-evidence contract tests, 34 simulator-evidence unit tests,
+and 10 simulator-evidence PostgreSQL integration tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -734,7 +735,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1524 Python tests.
+1568 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -1276,6 +1277,66 @@ This standalone component performs no execution, clock reads, identifier
 generation, external access, or persistence. It changes no executor return
 contract, HTTP behavior, audit gate, diagnostic behavior, or dependency.
 Runtime provenance integration remains outside this slice.
+
+## Opt-in simulator execution with evidence
+
+`gateway.simulator_evidence.create_simulator_evidence_executor(conninfo)`
+returns a synchronous callable:
+`execute(request, *, principal_id=...) -> ExecutionEvidence`.
+Configuration and caller identity must come from trusted application setup.
+This component does not authenticate credentials.
+
+Factory creation delegates configuration to the existing simulator executor
+and opens no database connection. The original executor interface and
+seven-field return contract remain unchanged.
+
+Each call captures supported request values, then calls the existing
+audited executor exactly once with fresh captured request dictionaries.
+The existing executor retains responsibility for internal policy evaluation,
+required database acknowledgements, and the fixed simulator invocation.
+Packaging checks use the same captured expected item.
+
+Completed results receive provenance through the existing evidence builder.
+The observation timestamp is generated after the underlying executor returns
+and its result passes validation. It describes this component's observation
+of that returned answer, not invocation time, source retrieval time, terminal
+audit time, or independently verified freshness.
+
+Failed and denied results retain their existing outcome inside the envelope,
+with no answer or provenance. These paths do not read the observation clock.
+
+Unsupported input retains RequestSnapshotValidationError.
+Unexpected ordinary capture failures raise the existing generic
+SimulatorPreparationError before execution.
+Underlying executor exceptions and BaseException interruptions propagate.
+
+Ordinary failures while validating or packaging a returned result raise
+`SimulatorEvidenceError` with `Simulator evidence preparation failed`.
+The error exposes only policy_event_id, execution_id, and invocation_status
+from a successfully validated returned result. If validation did not succeed,
+the identifiers are None and invocation_status is unknown.
+The component does not attach answer payloads, requests, credentials,
+provenance, or underlying exceptions as public error attributes.
+Displayed exception chaining is suppressed.
+
+A packaging failure does not undo simulator invocation or committed audit
+records. The component returns no fallback answer and performs no retry,
+resumption, or repair. Use the correlation context for manual reconciliation;
+do not interpret a packaging error as permission to repeat execution.
+The existing diagnostic completion message describes underlying execution,
+not successful preparation or delivery of this envelope.
+
+Unit tests cover one-call composition, captured-value independence, all
+unsuccessful outcomes, safe packaging errors, and interruptions.
+Real PostgreSQL tests cover correlated completion, controlled policy denial,
+simulator failures, invalid answers, read-only credentials, lost audit
+acknowledgements, and packaging failures after committed completion.
+
+Provenance remains unsigned synthetic metadata and is not persisted.
+The envelope does not independently authenticate origin, verify freshness,
+or cryptographically bind provenance to an attempt.
+No HTTP route, startup wiring, new audit record, schema, dependency,
+operational tool, or deployment is introduced.
 
 ## Engineering controls
 
