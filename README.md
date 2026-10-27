@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1450 tests: 56 policy tests, 43 API tests,
+1524 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -49,7 +49,8 @@ The repository includes a synthetic deterministic policy core and
 17 simulator-orchestration integration tests, 15 API-startup unit tests,
 7 API-startup PostgreSQL integration tests,
 7 audited API real-process tests,
-and 114 synthetic provenance contract tests.
+114 synthetic provenance contract tests,
+and 74 execution-evidence contract tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -733,7 +734,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1450 Python tests.
+1524 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -1224,6 +1225,57 @@ No external access, clock reads, generated identifiers, simulator calls,
 storage, or dependency changes are introduced.
 Existing execution results, HTTP behavior, audit records, and authorization
 gates are unchanged. No integration into those components is added.
+
+## Synthetic execution evidence envelope
+
+`gateway.execution_evidence` provides pure `build_execution_evidence`
+and `validate_execution_evidence` functions. Both require a separately
+supplied expected_item_id and reuse the existing execution-result and
+fixture-provenance contracts.
+
+An envelope contains exactly schema_version, execution_result, and
+provenance. Its format version must be the built-in integer 1.
+The envelope must be a built-in dictionary; booleans and integer or
+dictionary subclasses are rejected where those exact types are required.
+
+The nested execution_result retains its existing seven-field format
+and all supported status/reason/invocation combinations.
+Completed results require provenance matching their exact checked answer
+and the same expected item. Failed and denied results require provenance=None
+and retain the existing prohibition on answer payloads.
+
+`build_execution_evidence(execution_result, *, expected_item_id, observed_at)`
+builds provenance for completed results using the supplied observation time.
+For failed or denied results, observed_at must be None; other supplied
+values are rejected rather than silently discarded.
+
+`validate_execution_evidence(evidence, *, expected_item_id)` validates the
+complete package. It does not generate provenance to replace missing or
+invalid supplied metadata.
+
+Both functions return independent dictionaries: the outer envelope, nested
+execution result, completed answer, and completed provenance are fresh.
+Inputs are not modified.
+
+Invalid envelopes, nested records, expected identifiers, or supplied
+observation times raise `ExecutionEvidenceValidationError` with
+`Invalid execution evidence`. Documented nested validation errors are
+normalized without displayed underlying exception chaining.
+Missing or unexpected function arguments retain normal Python TypeError.
+
+The package checks agreement between provenance, answer contents, and the
+expected item. It does not cryptographically bind provenance to an execution
+attempt. Identical answers from different attempts may have identical
+provenance. Execution identifiers and source labels remain checked claims.
+
+Acceptance does not prove invocation, authentic origin, saved audit records,
+permission, actual observation time, or freshness. Provenance does not
+replace required audit acknowledgement.
+
+This standalone component performs no execution, clock reads, identifier
+generation, external access, or persistence. It changes no executor return
+contract, HTTP behavior, audit gate, diagnostic behavior, or dependency.
+Runtime provenance integration remains outside this slice.
 
 ## Engineering controls
 
