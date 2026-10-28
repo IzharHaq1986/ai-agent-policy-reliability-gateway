@@ -32,7 +32,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1571 tests: 56 policy tests, 43 API tests,
+1573 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -51,7 +51,7 @@ The repository includes a synthetic deterministic policy core and
 10 audited API real-process tests,
 114 synthetic provenance contract tests,
 74 execution-evidence contract tests, 34 simulator-evidence unit tests,
-and 10 simulator-evidence PostgreSQL integration tests.
+and 12 simulator-evidence PostgreSQL integration tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -744,7 +744,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1571 Python tests.
+1573 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
@@ -1378,9 +1378,17 @@ not successful preparation or delivery of this envelope.
 
 Unit tests cover one-call composition, captured-value independence, all
 unsuccessful outcomes, safe packaging errors, and interruptions.
-Real PostgreSQL tests cover correlated completion, controlled policy denial,
-simulator failures, invalid answers, read-only credentials, lost audit
-acknowledgements, and packaging failures after committed completion.
+Real PostgreSQL tests cover correlated completion for synthetic items
+1, 42, and 1000, controlled policy denial, simulator failures, invalid
+answers, read-only credentials, lost audit acknowledgements, and
+packaging failures after committed completion.
+
+The three named completion cases exercise the lower bound, middle,
+and upper bound through the existing audited executor. Each checks
+the exact answer, matching provenance, one simulator invocation,
+unchanged input, and independently inspected correlated audit records.
+These are model-free synthetic integration checks, not live-model
+evaluations or evidence of production readiness.
 
 Provenance remains unsigned synthetic metadata and is not persisted.
 The envelope does not independently authenticate origin, verify freshness,
