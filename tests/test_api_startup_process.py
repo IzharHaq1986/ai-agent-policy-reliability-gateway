@@ -210,3 +210,41 @@ def test_real_server_requires_database_write_permission(database, change):
     assert status == 500  # Never return the normal response after audit failure.
     assert body == {"error": {"code": "INTERNAL_ERROR"}}  # Expose no database details.
     assert after == before  # Permission rejection must not create an audit row.
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {},  # Exercise a request that would normally receive ALLOW.
+        {"tool": "other_tool"},  # Exercise an unknown-tool denial.
+        {"arguments": {"item_id": 0}},  # Exercise policy-invalid input.
+    ],
+)
+def test_real_server_requires_audit_connection(change):
+    # Reserve a private local endpoint without accepting TCP connections.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as unavailable:
+        unavailable.bind(("127.0.0.1", 0))  # Keep the port reserved throughout.
+        database_port = unavailable.getsockname()[1]  # Use the assigned port.
+        conninfo = (
+            "host=127.0.0.1 hostaddr=127.0.0.1 "
+            f"port={database_port} "
+            "dbname=synthetic_unavailable_audit user=synthetic_audit_writer "
+            "sslmode=disable"
+        )  # Use explicit local settings without credentials or service files.
+
+        # Reuse real startup and its unauthenticated HTTP readiness check.
+        with running_server(conninfo) as (port, token):
+            supplied = payload()  # Begin with an independent supported request.
+            supplied.update(change)  # Select the policy case under test.
+            status, body = request(
+                port, token, supplied, timeout=10
+            )  # Send once; bound the HTTP wait beyond the connection timeout.
+
+        # The server is stopped before releasing the reserved failure endpoint.
+        assert status == 500  # Withhold every normal policy response.
+        assert body == {"error": {"code": "INTERNAL_ERROR"}}  # Hide details.
+        encoded = json.dumps(body)  # Inspect only the public response content.
+        assert token not in encoded  # Protect the synthetic API credential.
+        assert conninfo not in encoded  # Do not expose connection configuration.
+        assert "synthetic_unavailable_audit" not in encoded  # Hide database names.
+        assert "synthetic_audit_writer" not in encoded  # Hide configured role names.
