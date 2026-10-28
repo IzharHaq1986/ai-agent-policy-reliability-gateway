@@ -316,7 +316,14 @@ def test_backward_clock_does_not_force_terminal_acceptance(database, monkeypatch
     assert events[0]["occurred_at"] == "2026-10-16T10:01:00Z"
 
 
-def test_evidence_executor_returns_correlated_completion(database, monkeypatch):
+@pytest.mark.parametrize(
+    "item_id",
+    [1, 42, 1000],  # Exercise the lower bound, middle, and upper bound.
+    ids=["item_lower_bound", "item_middle", "item_upper_bound"],
+)
+def test_evidence_executor_returns_correlated_completion(
+    database, monkeypatch, item_id
+):
     from gateway import simulator_evidence as evidence_module  # Use real composition.
     from gateway.execution_evidence import validate_execution_evidence  # Check output.
 
@@ -335,26 +342,30 @@ def test_evidence_executor_returns_correlated_completion(database, monkeypatch):
 
     monkeypatch.setattr(module, "simulate_read_item", simulate)
     monkeypatch.setattr(evidence_module, "_now", observe)
-    candidate = request()  # Preserve caller-owned input for comparison.
+    candidate = request()  # Build an independent supported request.
+    candidate["arguments"]["item_id"] = item_id  # Select this scenario.
     original = deepcopy(candidate)
     evidence = evidence_module.create_simulator_evidence_executor(writer)(
         candidate, principal_id="reliability-reader"
     )
-    assert evidence == validate_execution_evidence(evidence, expected_item_id=42)
+    assert evidence == validate_execution_evidence(evidence, expected_item_id=item_id)
     result = evidence["execution_result"]  # Inspect the underlying checked result.
     assert result["status"] == "completed"
-    assert result["result"] == {"item_id": 42, "label": "Synthetic item 42"}
-    assert evidence["provenance"]["source_id"] == "fixture_store:READ_ITEM:42"
+    assert result["result"] == {
+        "item_id": item_id,
+        "label": f"Synthetic item {item_id}",
+    }
+    assert evidence["provenance"]["source_id"] == f"fixture_store:READ_ITEM:{item_id}"
     assert evidence["provenance"]["observed_at"] == "2026-10-27T14:00:00Z"
-    assert invocations == [42] and observations == [
-        [42]
+    assert invocations == [item_id] and observations == [
+        [item_id]
     ]  # Execute once before packaging.
     assert candidate == original  # Preserve the supplied request.
     policies, bindings, events = stored(reader, result["policy_event_id"])
     assert len(policies) == len(bindings) == 1  # Require independently visible records.
     assert policies[0]["decision"] == "ALLOW"
     assert policies[0]["execution_status"] == "not_executed"
-    assert bindings[0]["item_id"] == 42
+    assert bindings[0]["item_id"] == item_id
     assert [row["status"] for row in events] == ["completed", "started"]
     assert all(row["execution_id"] == result["execution_id"] for row in events)
 
