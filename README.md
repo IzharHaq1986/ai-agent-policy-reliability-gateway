@@ -1038,6 +1038,46 @@ If either identifier is unavailable, record correlation as unresolved.
 Do not guess an attempt from item numbers or nearby timestamps.
 Preparation failure or interruption may provide no identifiers.
 
+### Handle evidence-packaging errors
+
+A `SimulatorEvidenceError` from the trusted evidence wrapper means validation
+or packaging failed after the underlying executor returned. It does not
+automatically mean the simulator failed or database delivery failed.
+This error is not a returned execution-result record; do not invent status
+or reason_code fields for it.
+
+Preserve only its public policy_event_id, execution_id, and invocation_status
+fields, together with the calling code version and failure observation time.
+Do not collect the raw exception object, traceback, arbitrary exception
+attributes, request, credentials, or answer payload.
+
+The wrapper supplies correlation fields from a fully validated returned
+result when available. Validation checks consistency; it does not independently
+authenticate the claims. Preserve the supplied invocation_status:
+not_invoked, invoked, or unknown. Packaging failure alone does not determine
+whether invocation occurred.
+
+If returned-result validation failed, both identifiers are None and
+invocation_status is unknown. Missing identifiers do not prove that nothing
+ran. If either identifier is unavailable, record correlation as unresolved
+and escalate to the application engineers. Do not guess from item numbers
+or nearby timestamps, or weaken the inspection guards.
+
+When both exact identifiers are available, use the approved read-only
+inspection procedure below. Saved completion records can coexist with a
+packaging error. They do not recover the withheld answer or establish that
+an evidence envelope was prepared or delivered.
+
+An underlying execution-completion diagnostic does not establish successful
+evidence packaging or delivery. Provenance is not persisted. Its observation
+timestamp describes the wrapper's observation of the checked returned answer,
+not execution time or independently verified freshness.
+
+Do not automatically retry, resume execution, repair records, recreate a
+withheld answer, or relabel the failed call as successful.
+Use inspection to record findings and unresolved facts, not to authorize
+another execution.
+
 ### Inspect through the approved reader connection
 
 The responsible database engineer must identify the intended database
@@ -1323,6 +1363,7 @@ A packaging failure does not undo simulator invocation or committed audit
 records. The component returns no fallback answer and performs no retry,
 resumption, or repair. Use the correlation context for manual reconciliation;
 do not interpret a packaging error as permission to repeat execution.
+See [evidence-packaging reconciliation guidance](#handle-evidence-packaging-errors).
 The existing diagnostic completion message describes underlying execution,
 not successful preparation or delivery of this envelope.
 
