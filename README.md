@@ -70,6 +70,9 @@ are not implemented.
 This project is independent of the n8n Engineering Playground.
 Prior-project test results do not establish validation for this service.
 
+See the [architecture and trust-boundary overview](docs/architecture.md)
+for entry points, required audit gates, and current limitations.
+
 ## Policy interface
 
 `gateway.policy.evaluate_request(request, *, principal_id)` returns
