@@ -1,0 +1,12 @@
+# Exclude everything unless explicitly required for the runtime build.
+**
+
+# Permit the existing runtime dependency list.
+!requirements.txt
+
+# Traverse only the source directories needed by the application.
+!src/
+!src/gateway/
+
+# Include direct Python modules; exclude caches, settings, and other file types.
+!src/gateway/*.py

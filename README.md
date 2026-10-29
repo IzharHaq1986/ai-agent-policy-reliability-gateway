@@ -24,8 +24,9 @@ Evaluate synthetic structured tool requests against server-owned policy.
 ## Planned technology
 
 Python, FastAPI, PostgreSQL, Docker, pytest, and GitHub Actions.
-Application dependencies remain unselected. Development validation
-tool versions are pinned in requirements-dev.txt.
+Direct runtime dependencies are pinned in requirements.txt; development
+validation tools are pinned in requirements-dev.txt.
+Transitive dependencies are not locked.
 
 Additional infrastructure requires a demonstrated requirement.
 
@@ -225,6 +226,100 @@ Passing these tests establishes the exercised local startup, HTTP, and
 persistence behavior. It does not establish production readiness,
 capacity, recovery, authenticity, or power-loss durability.
 No application behavior, CI configuration, or tool authority is changed.
+
+## Local audited API container
+
+The Dockerfile packages the existing PostgreSQL-audited, non-executing API.
+It pins an inspected official Python 3.12 image by its linux/amd64 manifest
+digest and installs only the existing runtime requirements.
+Transitive dependencies are not locked; the build is not fully reproducible.
+
+The build-context allowlist includes requirements.txt and direct Python
+modules in src/gateway only. Git data, local planning notes, environments,
+tests, credentials, caches, and unrelated files are excluded.
+Runtime source remains root-owned; the service runs as UID/GID 10001:10001.
+
+Build locally from the repository root with Docker Buildx available:
+
+```bash
+# Build for the explicitly supported platform and load the local image.
+docker buildx build --builder default --platform linux/amd64 --load \
+    --tag gateway-audited-api:local-validation .
+```
+
+The image starts gateway.api_startup:create_postgresql_app.
+It provisions no database, roles, migrations, or credentials.
+Missing required configuration prevents application startup.
+Successful startup does not establish database readiness or write permission.
+
+For local runtime, first provision an isolated database and its existing
+schema and application roles. Supply GATEWAY_API_TOKEN and
+GATEWAY_AUDIT_CONNINFO through trusted host-environment setup.
+The database address must be reachable from the container's selected network.
+Container loopback refers to that container, not the host or another container.
+Host libpq service files are not automatically available inside the image.
+
+The following template requires an existing approved local test network.
+Replace the network placeholder before use. No credentials are supplied by
+this example. Do not enable shell tracing or print the configured values.
+Environment variables are visible to parties with Docker administrative
+access; this is not a production secret-management design.
+
+```bash
+(
+    # Stop this example on failed commands or missing variables.
+    set -euo pipefail
+
+    # Require runtime settings without printing their contents.
+    test -n "${GATEWAY_API_TOKEN:-}"
+    test -n "${GATEWAY_AUDIT_CONNINFO:-}"
+
+    # Select the separately prepared local test network.
+    container_network='REPLACE_WITH_APPROVED_TEST_NETWORK'
+    test "$container_network" != 'REPLACE_WITH_APPROVED_TEST_NETWORK'
+
+    # Give this owned container an independent name.
+    container_name="gateway-audited-api-$(venv/bin/python -c 'from uuid import uuid4; print(uuid4().hex)')"
+
+    # Publish only to an operating-system-selected host loopback port.
+    docker run --detach --rm --name "$container_name" --pull never \
+        --network "$container_network" \
+        --read-only --cap-drop ALL --security-opt no-new-privileges=true \
+        --cpus 1 --memory 256m --pids-limit 128 \
+        --publish 127.0.0.1::8000 \
+        --env GATEWAY_API_TOKEN --env GATEWAY_AUDIT_CONNINFO \
+        gateway-audited-api:local-validation
+
+    # Display only the published address, not container configuration or credentials.
+    docker port "$container_name" 8000/tcp
+
+    # Stop only the container created above; --rm removes it after shutdown.
+    docker stop --time 5 "$container_name"
+)
+```
+
+The image's internal 0.0.0.0 bind supports container networking.
+The host publication must remain loopback-only.
+The runtime template briefly starts and then stops the service; perform
+authorized local checks before its final stop command when needed.
+
+Local container acceptance verified the filtered build context, image build,
+non-root startup command, missing-configuration rejection, effective runtime
+restrictions, loopback publication, unauthenticated rejection, and a generic
+HTTP 500 after an audit connection refusal.
+A separate isolated PostgreSQL run verified one HTTP ALLOW response against
+one independently read committed policy record. Its status remained
+not_executed, with no request bindings or execution events created.
+Owned test containers, networks, volume, and temporary credentials were removed.
+
+These were separate local acceptance checks, not additional pytest cases.
+The required CI runs the existing Python and SQL suites; it does not build
+or exercise this image. The Python test count remains 1573.
+
+No image publication, Compose stack, public deployment, readiness endpoint,
+simulator wiring, or expanded authority is introduced.
+This packaging does not establish production readiness, vulnerability-free
+dependencies, recovery behavior, or power-loss durability.
 
 ## Policy decision audit events
 
