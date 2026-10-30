@@ -313,8 +313,42 @@ not_executed, with no request bindings or execution events created.
 Owned test containers, networks, volume, and temporary credentials were removed.
 
 These were separate local acceptance checks, not additional pytest cases.
-The required CI runs the existing Python and SQL suites; it does not build
-or exercise this image. The Python test count remains 1573.
+The Python test count remains 1573.
+
+### Automated container configuration acceptance
+
+The existing policy-validation CI job also invokes
+tests/support/run_container_acceptance.py. The helper builds the existing
+Dockerfile for linux/amd64 using Docker Buildx and loads a uniquely tagged
+local image. The Dockerfile's dependency compatibility check must succeed.
+No image is published.
+
+Image inspection checks the platform, UID/GID 10001:10001, expected audited
+startup command, absence of an entrypoint override, and absence of embedded
+API credential or audit connection environment settings.
+
+Two cases exercise the image's default startup command:
+a fresh synthetic API credential without audit configuration, and
+non-secret audit connection settings without an API credential.
+Each must exit with code 1, without an out-of-memory termination or Docker
+state error, and include its expected generic configuration rejection.
+
+The cases use no networking, host ports, or mounts. They apply a read-only
+filesystem, dropped capabilities, no-new-privileges, and bounded resources.
+Raw build and application output is captured privately rather than printed.
+The helper bounds Docker operations and attempts cleanup of its uniquely
+named containers and image tag on ordinary failures. Cleanup failure fails
+acceptance; forced process termination can prevent cleanup.
+
+The helper requires available Docker Buildx and does not install tooling.
+Build failure, timeout, unexpected startup behavior, or missing expected
+rejection fails the existing validation job. Existing Python and SQL checks
+remain in that job; its overall timeout is twenty minutes.
+
+These automated cases do not check HTTP responses, database availability,
+audit write permission, successful persistence, or recovery behavior.
+The broader local runtime checks above remain separate evidence.
+Passing container acceptance does not establish production readiness.
 
 No image publication, Compose stack, public deployment, readiness endpoint,
 simulator wiring, or expanded authority is introduced.
