@@ -98,7 +98,8 @@ jobs:
   policy-validation:
     name: policy-validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Allow the bounded image build, existing tests, and resource cleanup.
+    timeout-minutes: 20
     env:
       PYTHONDONTWRITEBYTECODE: "1"
 
@@ -136,6 +137,13 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
             --cache-dir "$RUNNER_TEMP/policy-mypy-cache"
+
+      - name: Check container build and required startup configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" \
+            tests/support/run_container_acceptance.py
 
       - name: Prepare isolated PostgreSQL image
         shell: bash
