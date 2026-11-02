@@ -4,11 +4,20 @@ import json  # Inspect Docker state without printing container configuration.
 import os  # Pass synthetic configuration through the subprocess environment.
 import secrets  # Generate a disposable API credential.
 import subprocess  # Run bounded Docker operations.
+import sys  # Make the checked-out application validator available explicitly.
 import tempfile  # Keep build and application output in private temporary storage.
 import time  # Bound startup observation with a monotonic clock.
+from contextlib import contextmanager  # Own temporary database resources.
 from http.client import HTTPConnection  # Send local HTTP without proxy settings.
 from pathlib import Path  # Locate the repository independently of the caller.
 from uuid import uuid4  # Give owned Docker resources independent names.
+
+import psycopg  # Verify actual database identities and committed records.
+from psycopg import sql  # Quote generated role passwords safely.
+from psycopg.conninfo import make_conninfo  # Build explicit test connections.
+from psycopg.rows import dict_row  # Inspect saved events by field name.
+from run_postgresql_acceptance import IMAGE as POSTGRES_IMAGE
+from run_postgresql_acceptance import docker as database_docker
 
 ROOT = Path(__file__).resolve().parents[2]  # Build from the repository root.
 COMMAND = [  # Require the existing audited API entry point.
@@ -296,6 +305,382 @@ def check_http(image, container, network):
     print("CONTAINER_HTTP_GRACEFUL_SHUTDOWN=PASS")
 
 
+@contextmanager
+def isolated_database():
+    """Own one temporary database, network, volume, and credential file."""
+    suffix = uuid4().hex
+    container = f"gateway-container-db-{suffix}"
+    network = f"gateway-container-db-network-{suffix}"
+    volume = f"gateway-container-db-volume-{suffix}"
+    passwords = {
+        role: secrets.token_urlsafe(32)
+        for role in ("gateway_audit_writer", "gateway_audit_reader")
+    }  # Keep administrator credentials separate from application credentials.
+
+    with tempfile.TemporaryDirectory(prefix="gateway-container-db-") as temporary:
+        password_file = Path(temporary) / "bootstrap-password"
+        password_file.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+        password_file.chmod(0o444)  # Permit the database user to read the mount.
+        # The parent directory remains private; remove the mount before deletion.
+        try:
+            docker("image", "inspect", POSTGRES_IMAGE)
+            docker("network", "create", "--driver", "bridge", network)
+            docker("volume", "create", volume)
+            docker(
+                "create",
+                "--name",
+                container,
+                "--pull",
+                "never",
+                "--platform",
+                "linux/amd64",
+                "--network",
+                network,
+                "--security-opt",
+                "no-new-privileges=true",
+                "--cpus",
+                "1",
+                "--memory",
+                "512m",
+                "--pids-limit",
+                "128",
+                "--publish",
+                "127.0.0.1::5432",
+                "--mount",
+                f"type=volume,src={volume},dst=/var/lib/postgresql",
+                "--mount",
+                f"type=bind,src={password_file},dst=/run/bootstrap-password,readonly",
+                "--env",
+                "POSTGRES_PASSWORD_FILE=/run/bootstrap-password",
+                "--env",
+                "POSTGRES_USER=gateway_test_admin",
+                "--env",
+                "POSTGRES_DB=gateway_audit_test",
+                POSTGRES_IMAGE,
+                "-c",
+                "max_connections=20",
+                "-c",
+                "shared_buffers=32MB",
+            )
+            docker("start", container)
+
+            deadline = time.monotonic() + 45
+            while True:
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "Container database startup timed out")
+                ready = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        container,
+                        "pg_isready",
+                        "-h",
+                        "127.0.0.1",
+                        "-U",
+                        "gateway_test_admin",
+                        "-d",
+                        "gateway_audit_test",
+                    ],
+                    capture_output=True,
+                    timeout=min(5, remaining),
+                )  # A timed-out Docker operation fails rather than being ignored.
+                if ready.returncode == 0:
+                    break
+                require(
+                    ready.returncode in (1, 2),
+                    "Unexpected database readiness probe failure",
+                )
+                state = json.loads(docker("inspect", container))[0]["State"]
+                require(state["Running"], "Container database exited during startup")
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+
+            def execute_sql(statement):
+                return database_docker(
+                    "exec",
+                    "-i",
+                    container,
+                    "psql",
+                    "-X",
+                    "-A",
+                    "-t",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-U",
+                    "gateway_test_admin",
+                    "-d",
+                    "gateway_audit_test",
+                    input_text=(
+                        "SET lock_timeout = '2s'; "
+                        "SET statement_timeout = '5s';\n" + statement
+                    ),
+                )  # Reuse the existing bounded, private SQL delivery helper.
+
+            execute_sql(
+                "CREATE ROLE gateway_audit_owner NOLOGIN NOSUPERUSER "
+                "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
+            )
+            for role, password in passwords.items():
+                execute_sql(
+                    sql.SQL(
+                        "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOREPLICATION NOBYPASSRLS PASSWORD {};"
+                    )
+                    .format(sql.Identifier(role), sql.Literal(password))
+                    .as_string()
+                )
+            execute_sql(
+                "REVOKE CONNECT ON DATABASE gateway_audit_test FROM PUBLIC;"
+                "GRANT CONNECT ON DATABASE gateway_audit_test "
+                "TO gateway_audit_writer, gateway_audit_reader;"
+            )
+            for migration in (
+                "migrations/001_policy_decision_audit.sql",
+                "migrations/002_request_bindings.sql",
+                "migrations/003_execution_events.sql",
+            ):
+                execute_sql((ROOT / migration).read_text(encoding="utf-8"))
+
+            details = json.loads(docker("inspect", container))[0]
+            bindings = details["NetworkSettings"]["Ports"]["5432/tcp"]
+            require(
+                len(bindings) == 1 and bindings[0]["HostIp"] == "127.0.0.1",
+                "Unexpected database host publication",
+            )
+            host_connections = {}
+            for role, password in passwords.items():
+                conninfo = make_conninfo(
+                    host="127.0.0.1",
+                    port=bindings[0]["HostPort"],
+                    dbname="gateway_audit_test",
+                    user=role,
+                    password=password,
+                    options="-c statement_timeout=5000 -c lock_timeout=2000",
+                )
+                with psycopg.connect(conninfo, connect_timeout=5) as connection:
+                    identity = connection.execute(
+                        "SELECT current_database(), current_user"
+                    ).fetchone()
+                    require(
+                        identity == ("gateway_audit_test", role),
+                        "Unexpected container test database identity",
+                    )
+                host_connections[role] = conninfo
+
+            writer = make_conninfo(
+                host=container,
+                port=5432,
+                dbname="gateway_audit_test",
+                user="gateway_audit_writer",
+                password=passwords["gateway_audit_writer"],
+                sslmode="disable",
+            )  # Only the writer connection will be supplied to the API.
+            print("CONTAINER_DATABASE_IDENTITIES=PASS")
+            yield network, writer, host_connections["gateway_audit_reader"]
+        finally:
+            cleanup_failed = False
+            # Attempt every owned-resource cleanup even if another removal fails.
+            operations = (
+                (
+                    (
+                        "container",
+                        "ls",
+                        "--all",
+                        "--quiet",
+                        "--filter",
+                        f"name=^/{container}$",
+                    ),
+                    ("rm", "--force", container),
+                ),
+                (
+                    ("volume", "ls", "--quiet", "--filter", f"name=^{volume}$"),
+                    ("volume", "rm", volume),
+                ),
+                (
+                    ("network", "ls", "--quiet", "--filter", f"name=^{network}$"),
+                    ("network", "rm", network),
+                ),
+            )
+            for inspection, removal in operations:
+                try:
+                    if docker(*inspection).strip():
+                        docker(*removal)
+                except Exception:
+                    cleanup_failed = True
+            require(not cleanup_failed, "Container database resource cleanup failed")
+            print("CONTAINER_DATABASE_RESOURCES=REMOVED")
+    print("CONTAINER_DATABASE_CREDENTIAL_FILE=REMOVED")
+
+
+def database_snapshot(reader):
+    """Read bounded evidence through a separate read-only transaction."""
+    with psycopg.connect(reader, connect_timeout=5, row_factory=dict_row) as connection:
+        connection.execute("SET TRANSACTION READ ONLY")
+        connection.execute("SET LOCAL statement_timeout = '5s'")
+        connection.execute("SET LOCAL lock_timeout = '2s'")
+        identity = connection.execute(
+            "SELECT current_database() AS database, current_user AS role"
+        ).fetchone()
+        require(
+            identity
+            == {
+                "database": "gateway_audit_test",
+                "role": "gateway_audit_reader",
+            },
+            "Unexpected audit inspection identity",
+        )
+        counts = connection.execute(
+            "SELECT "
+            "(SELECT count(*) FROM gateway_audit.policy_decisions) AS policies, "
+            "(SELECT count(*) FROM gateway_audit.request_bindings) AS bindings, "
+            "(SELECT count(*) FROM gateway_audit.execution_events) AS executions"
+        ).fetchone()
+        rows = connection.execute(
+            "SELECT schema_version, event_type, event_id, occurred_at, "
+            "principal_id, decision, reason_code, policy_version, execution_status "
+            "FROM gateway_audit.policy_decisions LIMIT 2"
+        ).fetchall()  # Extra rows fail acceptance rather than being guessed away.
+        return counts, rows
+
+
+def check_database_http(image, container):
+    """Verify one normal HTTP response against independently committed evidence."""
+    # Resolve the repository's existing validator without requiring caller PYTHONPATH.
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        from gateway.audit import validate_audit_event
+    finally:
+        sys.path.pop(0)
+
+    with isolated_database() as (network, writer, reader):
+        try:
+            counts, rows = database_snapshot(reader)
+            require(
+                counts == {"policies": 0, "bindings": 0, "executions": 0}
+                and rows == [],
+                "Container database must begin empty",
+            )
+            token = secrets.token_urlsafe(32)
+            environment = os.environ.copy()
+            environment["GATEWAY_API_TOKEN"] = token
+            environment["GATEWAY_AUDIT_CONNINFO"] = writer
+            docker(
+                "create",
+                "--name",
+                container,
+                "--pull",
+                "never",
+                "--platform",
+                "linux/amd64",
+                "--network",
+                network,
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges=true",
+                "--cpus",
+                "1",
+                "--memory",
+                "256m",
+                "--pids-limit",
+                "128",
+                "--publish",
+                "127.0.0.1::8000",
+                "--env",
+                "GATEWAY_API_TOKEN",
+                "--env",
+                "GATEWAY_AUDIT_CONNINFO",
+                image,
+                environment=environment,
+            )  # The API receives writer credentials only, never administrator access.
+            docker("start", container)
+            details = json.loads(docker("inspect", container))[0]
+            bindings = details["NetworkSettings"]["Ports"]["8000/tcp"]
+            require(
+                len(bindings) == 1
+                and bindings[0]["HostIp"] == "127.0.0.1"
+                and details["Config"]["User"] == "10001:10001"
+                and details["Config"]["Cmd"] == COMMAND
+                and details["HostConfig"]["ReadonlyRootfs"]
+                and not details["Mounts"]
+                and set(details["NetworkSettings"]["Networks"]) == {network},
+                "Unexpected database-backed API configuration",
+            )
+            port = int(bindings[0]["HostPort"])
+
+            deadline = time.monotonic() + 25
+            while True:
+                state = json.loads(docker("inspect", container))[0]["State"]
+                require(state["Running"], "Database-backed API exited during startup")
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "Database-backed API availability timed out")
+                try:
+                    status, body = http_request(port, timeout=min(1, remaining))
+                except OSError:
+                    time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                    continue
+                require(
+                    status == 401 and body == {"error": {"code": "UNAUTHENTICATED"}},
+                    "Unexpected database-backed API availability response",
+                )
+                break
+
+            # Include all unauthenticated probes in the no-record baseline check.
+            counts, rows = database_snapshot(reader)
+            require(
+                counts == {"policies": 0, "bindings": 0, "executions": 0}
+                and rows == [],
+                "Unauthenticated startup probes created unexpected records",
+            )
+            status, body = http_request(port, token=token, timeout=10)
+            expected = {
+                "decision": "ALLOW",
+                "reason_code": "POLICY_ALLOW",
+                "policy_version": "policy-core-v1",
+                "execution_status": "not_executed",
+            }
+            require(status == 200 and body == expected, "Unexpected ALLOW response")
+
+            counts, rows = database_snapshot(reader)
+            require(
+                counts == {"policies": 1, "bindings": 0, "executions": 0}
+                and len(rows) == 1,
+                "Unexpected committed audit evidence",
+            )
+            audit = validate_audit_event(rows[0])
+            require(
+                audit == rows[0]
+                and audit["principal_id"] == "reliability-reader"
+                and {key: audit[key] for key in expected} == body,
+                "Committed audit record differs from the expected decision",
+            )
+            print("CONTAINER_HTTP_ALLOW_AND_COMMITTED_AUDIT=PASS")
+            print("CONTAINER_HTTP_REMAINS_NON_EXECUTING=PASS")
+
+            docker("stop", "--time", "5", container, timeout=15)
+            state = json.loads(docker("inspect", container))[0]["State"]
+            require(
+                state["Status"] == "exited"
+                and state["ExitCode"] == 0
+                and not state["OOMKilled"]
+                and not state["Error"],
+                "Database-backed API did not shut down gracefully",
+            )
+            print("CONTAINER_DATABASE_API_SHUTDOWN=PASS")
+        finally:
+            # Remove the API before its database network and credentials disappear.
+            found = docker(
+                "container",
+                "ls",
+                "--all",
+                "--quiet",
+                "--filter",
+                f"name=^/{container}$",
+            ).strip()
+            if found:
+                docker("rm", "--force", container)
+
+
 def main():
     suffix = uuid4().hex  # Scope cleanup to resources owned by this invocation.
     image = f"gateway-container-acceptance:{suffix}"
@@ -303,6 +688,7 @@ def main():
         f"gateway-config-audit-{suffix}",
         f"gateway-config-token-{suffix}",
         f"gateway-http-{suffix}",
+        f"gateway-database-api-{suffix}",
     ]
     network = f"gateway-http-network-{suffix}"
     stage = "tool inspection"
@@ -366,6 +752,8 @@ def main():
             check_configuration(image, container, missing, expected)
         stage = "container HTTP acceptance"
         check_http(image, containers[2], network)
+        stage = "container database success acceptance"
+        check_database_http(image, containers[3])
     except Exception:
         raise RuntimeError(f"Container acceptance failed during {stage}") from None
     finally:

@@ -364,10 +364,35 @@ HTTP operations use direct loopback connections and bounded response reads.
 The container must shut down within the configured grace period with
 exit code zero and no out-of-memory termination or Docker state error.
 
-These checks do not establish successful container-to-database persistence,
-audit write permission, timeout behavior, mid-transaction outages,
-lost acknowledgements, recovery, or load capacity.
-The broader local database-backed checks above remain separate evidence.
+The helper also exercises one successful database-backed request.
+It creates an isolated PostgreSQL container using the existing pinned image,
+fresh test credentials, restricted owner/writer/reader roles, and all three
+existing migrations. CI prepares that image before container acceptance.
+Any published database port is restricted to host loopback.
+
+The API uses writer credentials and container-network addressing.
+A separate host reader connection verifies the intended database and reader
+identity. All three audit tables must be empty before the HTTP scenario,
+including after unauthenticated startup probes.
+
+One authenticated supported item-42 request must return HTTP 200 with
+ALLOW, POLICY_ALLOW, policy-core-v1, and not_executed.
+The reader must observe exactly one committed policy record, validated
+against the existing audit-event contract and matched to the trusted principal
+and public response fields. The dedicated database has no concurrent test
+writers; missing or extra records fail rather than being correlated by guesswork.
+Request bindings and execution events must remain empty.
+
+The API must shut down cleanly before database cleanup.
+The helper attempts removal of its owned database container, volume, network,
+and temporary bootstrap credential file as well as existing API resources.
+Application configuration uses only generated test credentials.
+No production database or inherited operational connection is used.
+
+This successful case provides evidence for the exercised container-to-database
+connection, audit write, and independently visible committed record.
+It does not establish power-loss durability, timeout behavior,
+mid-transaction outages, lost-acknowledgement handling, recovery, or load capacity.
 HTTP remains non-executing. Passing container acceptance does not
 establish production readiness. The Python test count remains 1573.
 
