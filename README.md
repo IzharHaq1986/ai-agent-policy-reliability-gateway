@@ -33,7 +33,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1573 tests: 56 policy tests, 43 API tests,
+1592 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -52,7 +52,8 @@ The repository includes a synthetic deterministic policy core and
 10 audited API real-process tests,
 114 synthetic provenance contract tests,
 74 execution-evidence contract tests, 34 simulator-evidence unit tests,
-and 12 simulator-evidence PostgreSQL integration tests.
+12 simulator-evidence PostgreSQL integration tests,
+and 19 PostgreSQL acceptance startup-diagnostic tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
@@ -100,6 +101,42 @@ PYTHONDONTWRITEBYTECODE=1 venv/bin/python -m pytest -q -W error
 
 Direct validation tools are pinned; transitive dependencies are not
 locked. These tests do not establish production or live-model safety.
+
+### PostgreSQL acceptance startup diagnostics
+
+The PostgreSQL acceptance runner reports restricted diagnostics when its
+readiness loop fails. Fixed failure labels distinguish probe_timeout,
+probe_error, and observation_expired. The report includes the number of
+probes started and elapsed observation time.
+
+Before existing cleanup, the diagnostic helper attempts one Docker
+inspection of the owned container with a five-second command timeout.
+Available output contains only an allowlisted container status, integer
+exit code, and boolean OOM flag. Failed or malformed inspection is reported
+as unavailable. Raw inspection output, database logs, credentials,
+environment, connection strings, mounts, and exception payloads are not
+printed by the diagnostic helper.
+
+Ordinary diagnostic preparation or output errors are suppressed so the
+original readiness exception continues to existing cleanup.
+BaseException interruptions are not suppressed.
+Successful readiness produces no startup-failure diagnostics.
+
+The existing five-second probe timeout, forty-second observation threshold,
+half-second polling interval, and readiness-success criterion are unchanged.
+A timed-out probe is not retried. The observation threshold is checked after
+unsuccessful probes and is not a total startup deadline.
+Failure inspection can add time after readiness has already failed.
+
+Nineteen deterministic tests exercise simulated readiness and inspection
+outcomes, redaction, ordinary diagnostic failure isolation, interruptions,
+and existing main-level cleanup after a readiness timeout.
+These tests start no Docker containers; the isolated PostgreSQL acceptance
+run separately exercises successful startup and the full Python suite.
+
+Diagnostic observations do not establish root cause, successful readiness
+after failure, or audit persistence. They do not fix or explain the
+previously observed intermittent readiness-command timeouts.
 
 ## Local authenticated API
 
@@ -313,7 +350,7 @@ not_executed, with no request bindings or execution events created.
 Owned test containers, networks, volume, and temporary credentials were removed.
 
 These were separate local acceptance checks, not additional pytest cases.
-The Python test count remains 1573.
+The Python test count remains 1592.
 
 ### Automated container configuration acceptance
 
@@ -394,7 +431,7 @@ connection, audit write, and independently visible committed record.
 It does not establish power-loss durability, timeout behavior,
 mid-transaction outages, lost-acknowledgement handling, recovery, or load capacity.
 HTTP remains non-executing. Passing container acceptance does not
-establish production readiness. The Python test count remains 1573.
+establish production readiness. The Python test count remains 1592.
 
 No image publication, Compose stack, public deployment, readiness endpoint,
 simulator wiring, or expanded authority is introduced.
@@ -922,7 +959,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1573 Python tests.
+1592 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.

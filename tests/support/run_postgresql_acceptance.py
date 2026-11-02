@@ -33,6 +33,102 @@ def docker(*args, input_text=None):
     return result.stdout
 
 
+def report_startup_failure(container, reason, attempts, started):
+    """Emit restricted observations without replacing an ordinary startup failure."""
+    try:
+        if reason not in {"probe_timeout", "probe_error", "observation_expired"}:
+            return  # Never print arbitrary reason text.
+        if type(attempts) is not int or attempts < 0:
+            return
+        elapsed = time.monotonic() - started
+        if not 0 <= elapsed < float("inf"):
+            return  # Reject invalid timing rather than formatting untrusted values.
+        print(
+            f"POSTGRESQL_STARTUP_FAILURE={reason} "
+            f"PROBES={attempts} ELAPSED_SECONDS={elapsed:.2f}"
+        )
+        try:
+            inspected = subprocess.run(
+                ["docker", "inspect", "--format", "{{json .State}}", container],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )  # Inspect only the owned container, once, before existing cleanup.
+            if inspected.returncode != 0:
+                raise ValueError("Inspection unavailable")
+            state = json.loads(inspected.stdout)
+            if type(state) is not dict:
+                raise ValueError("Invalid inspection state")
+            status = state.get("Status")
+            exit_code = state.get("ExitCode")
+            oom = state.get("OOMKilled")
+            if (
+                type(status) is not str
+                or status
+                not in {
+                    "created",
+                    "running",
+                    "paused",
+                    "restarting",
+                    "removing",
+                    "exited",
+                    "dead",
+                }
+                or type(exit_code) is not int
+                or not -(2**31) <= exit_code < 2**31
+                or type(oom) is not bool
+            ):
+                raise ValueError("Invalid inspection fields")
+        except Exception:
+            print("POSTGRESQL_STARTUP_INSPECTION=unavailable")
+        else:
+            print(
+                f"POSTGRESQL_STARTUP_INSPECTION=available STATUS={status} "
+                f"EXIT_CODE={exit_code} OOM={str(oom).lower()}"
+            )  # Exclude raw output, errors, environment, mounts, and credentials.
+    except Exception:
+        pass  # Ordinary diagnostic failures must not replace the startup failure.
+
+
+def wait_for_postgresql(container):
+    """Preserve existing readiness rules while reporting ordinary failures."""
+    started = time.monotonic()
+    deadline = started + 40
+    attempts = 0
+    reason = "probe_error"
+    try:
+        while True:
+            attempts += 1
+            ready = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "pg_isready",
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "gateway_test_admin",
+                    "-d",
+                    "gateway_audit_test",
+                ],
+                capture_output=True,
+                timeout=5,
+            )
+            if ready.returncode == 0:
+                return  # Preserve successful readiness without extra inspection.
+            if time.monotonic() >= deadline:
+                reason = "observation_expired"
+                raise RuntimeError("Isolated PostgreSQL readiness timed out")
+            time.sleep(0.5)  # Preserve the existing polling interval.
+    except subprocess.TimeoutExpired:
+        report_startup_failure(container, "probe_timeout", attempts, started)
+        raise  # Preserve the exact original timeout; do not retry the probe.
+    except Exception:
+        report_startup_failure(container, reason, attempts, started)
+        raise  # Existing main-level cleanup still runs before the failure propagates.
+
+
 def main():
     suffix = uuid4().hex
     container = f"gateway-receiver-test-{suffix}"
@@ -80,29 +176,7 @@ def main():
                 "-c",
                 "shared_buffers=32MB",
             )
-            deadline = time.monotonic() + 40
-            while True:
-                ready = subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        container,
-                        "pg_isready",
-                        "-h",
-                        "127.0.0.1",
-                        "-U",
-                        "gateway_test_admin",
-                        "-d",
-                        "gateway_audit_test",
-                    ],
-                    capture_output=True,
-                    timeout=5,
-                )
-                if ready.returncode == 0:
-                    break
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("Isolated PostgreSQL readiness timed out")
-                time.sleep(0.5)
+            wait_for_postgresql(container)
 
             def execute_sql(statement):
                 return docker(
