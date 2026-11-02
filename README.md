@@ -333,11 +333,13 @@ non-secret audit connection settings without an API credential.
 Each must exit with code 1, without an out-of-memory termination or Docker
 state error, and include its expected generic configuration rejection.
 
-The cases use no networking, host ports, or mounts. They apply a read-only
+The two configuration-rejection cases use no networking, host ports,
+or mounts. They apply a read-only
 filesystem, dropped capabilities, no-new-privileges, and bounded resources.
 Raw build and application output is captured privately rather than printed.
 The helper bounds Docker operations and attempts cleanup of its uniquely
-named containers and image tag on ordinary failures. Cleanup failure fails
+named containers, HTTP test network, and image tag on ordinary failures.
+Cleanup failure fails
 acceptance; forced process termination can prevent cleanup.
 
 The helper requires available Docker Buildx and does not install tooling.
@@ -345,10 +347,29 @@ Build failure, timeout, unexpected startup behavior, or missing expected
 rejection fails the existing validation job. Existing Python and SQL checks
 remain in that job; its overall timeout is twenty minutes.
 
-These automated cases do not check HTTP responses, database availability,
-audit write permission, successful persistence, or recovery behavior.
-The broader local runtime checks above remain separate evidence.
-Passing container acceptance does not establish production readiness.
+The same helper also starts the built image's default audited API on an
+owned Docker bridge network, with an operating-system-selected host port
+published only on 127.0.0.1. Inspection checks runtime restrictions,
+network attachment, absence of mounts, and loopback publication.
+An in-container check verifies the running user, no-new-privileges,
+and empty effective, permitted, and bounding capability sets.
+
+Bounded unauthenticated startup probes must receive exactly HTTP 401 /
+UNAUTHENTICATED. This establishes HTTP availability, not database readiness.
+The configured audit endpoint is port 1 on the container's own loopback;
+a separate in-container probe must confirm connection refusal.
+One authenticated supported item-42 request must then receive exactly
+HTTP 500 / INTERNAL_ERROR, without an authenticated retry or fallback.
+HTTP operations use direct loopback connections and bounded response reads.
+The container must shut down within the configured grace period with
+exit code zero and no out-of-memory termination or Docker state error.
+
+These checks do not establish successful container-to-database persistence,
+audit write permission, timeout behavior, mid-transaction outages,
+lost acknowledgements, recovery, or load capacity.
+The broader local database-backed checks above remain separate evidence.
+HTTP remains non-executing. Passing container acceptance does not
+establish production readiness. The Python test count remains 1573.
 
 No image publication, Compose stack, public deployment, readiness endpoint,
 simulator wiring, or expanded authority is introduced.
