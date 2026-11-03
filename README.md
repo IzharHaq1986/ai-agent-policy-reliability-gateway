@@ -75,6 +75,10 @@ Prior-project test results do not establish validation for this service.
 See the [architecture and trust-boundary overview](docs/architecture.md)
 for entry points, required audit gates, and current limitations.
 
+See the [proposed human-approval lifecycle](docs/human-approval-design.md)
+for future requirements. This design implements no approval or execution
+capability.
+
 ## Policy interface
 
 `gateway.policy.evaluate_request(request, *, principal_id)` returns
