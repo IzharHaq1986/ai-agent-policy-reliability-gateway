@@ -33,7 +33,7 @@ Additional infrastructure requires a demonstrated requirement.
 ## Current status
 
 The repository includes a synthetic deterministic policy core and
-1775 tests: 56 policy tests, 43 API tests,
+1786 tests: 56 policy tests, 43 API tests,
 91 audit-builder tests, 30 API audit-integration tests,
 42 JSON-lines receiver tests, 13 API/receiver composition tests,
 26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
@@ -55,13 +55,18 @@ The repository includes a synthetic deterministic policy core and
 12 simulator-evidence PostgreSQL integration tests,
 19 PostgreSQL acceptance startup-diagnostic tests,
 125 synthetic approval-request descriptor tests,
-and 58 approval state transition tests.
+58 approval state transition tests,
+and 11 exact approval request match tests.
 CI covers repository hygiene, lint, formatting,
 strict source typing, and the full test suite with warnings treated as errors.
 
 The synthetic approval-request descriptor validates a request ID and
 the fixed fixture request fields. It grants no approval and is not
 connected to the HTTP API or executor.
+
+The exact approval request match helper checks the request ID and
+captured details against values supplied separately by trusted code.
+A match confirms consistency and grants no approval or permission to run.
 
 The standalone approval state check reports whether a proposed move
 appears in the lifecycle rules. It does not change a record, check
@@ -364,7 +369,7 @@ not_executed, with no request bindings or execution events created.
 Owned test containers, networks, volume, and temporary credentials were removed.
 
 These were separate local acceptance checks, not additional pytest cases.
-The Python test count remains 1775.
+The Python test count remains 1786.
 
 ### Automated container configuration acceptance
 
@@ -445,7 +450,7 @@ connection, audit write, and independently visible committed record.
 It does not establish power-loss durability, timeout behavior,
 mid-transaction outages, lost-acknowledgement handling, recovery, or load capacity.
 HTTP remains non-executing. Passing container acceptance does not
-establish production readiness. The Python test count remains 1775.
+establish production readiness. The Python test count remains 1786.
 
 No image publication, Compose stack, public deployment, readiness endpoint,
 simulator wiring, or expanded authority is introduced.
@@ -973,7 +978,7 @@ Python validation remains responsible for exact built-in-type checks.
 The isolated acceptance runner applies all three migrations, runs all
 three SQL acceptance suites, and verifies that all three tables are empty
 after each suite rolls back. These SQL checks are separate from the
-1775 Python tests.
+1786 Python tests.
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
