@@ -4,6 +4,7 @@ from typing import Literal, TypedDict  # Describe the checked descriptor.
 from uuid import UUID  # Validate supplied identifiers without generating them.
 
 from gateway.request_snapshot import (
+    RequestSnapshot,
     RequestSnapshotValidationError,
     capture_request_snapshot,
 )  # Reuse existing synthetic request checks.
@@ -102,3 +103,30 @@ def build_approval_request(
         },
         expected_request_id=identifier,
     )  # Apply the shared descriptor contract without granting approval.
+
+
+def validate_approval_request_match(
+    record: object,
+    *,
+    expected_request_id: object,
+    expected_snapshot: object,
+) -> ApprovalRequest:
+    """Check consistency with expected values supplied by trusted code."""
+    # Require the existing snapshot type rather than accepting a second form.
+    if type(expected_snapshot) is not RequestSnapshot:
+        raise ApprovalRequestValidationError("Invalid approval request")
+
+    # Check the candidate's schema, supported values, and request ID first.
+    checked = validate_approval_request(record, expected_request_id=expected_request_id)
+
+    # Compare every captured field so a matching ID cannot hide changed details.
+    if (
+        checked["principal_id"] != expected_snapshot.principal_id
+        or checked["tool"] != expected_snapshot.tool
+        or checked["operation"] != expected_snapshot.operation
+        or checked["item_id"] != expected_snapshot.item_id
+    ):
+        raise ApprovalRequestValidationError("Invalid approval request")
+
+    # Return the validator's fresh dictionary, without modifying the input.
+    return checked
