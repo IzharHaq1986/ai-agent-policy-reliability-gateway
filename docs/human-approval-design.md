@@ -104,6 +104,93 @@ A clock correction must not revive expired, revoked, rejected, or consumed state
 Clock authority, anomaly detection, timestamp precision, and permitted approval
 duration must be resolved before implementation; no production defaults exist.
 
+## Proposed time contract
+
+This section is a proposal, not implemented behavior. Existing audit and
+provenance timestamps do not establish trusted time for approval decisions.
+
+### Representation and boundaries
+
+The proposed persisted format is canonical UTC text at whole-second
+precision: YYYY-MM-DDTHH:MM:SSZ. Calendar values must be valid.
+Reject offsets, fractional seconds, naive times, and alternate spellings
+rather than silently normalizing or truncating them.
+
+At creation, trusted code must establish created_at < expires_at.
+The permitted duration must satisfy a server-owned, explicitly configured
+positive maximum. No default duration is selected by this proposal.
+Unrepresentable expiry or unavailable configuration blocks creation.
+
+Eligibility requires created_at <= trusted_now < expires_at.
+Equality with expires_at is expired. Approval does not extend or replace
+the expiry established while pending. Comparing valid timestamps does not
+establish that their source is trustworthy.
+
+### Time authority and uncertainty
+
+Future orchestration must obtain time through a server-owned component
+whose source, synchronization, health checks, and failure behavior have
+been reviewed. Client or model timestamps cannot supply trusted_now.
+A successful call to datetime.now alone does not establish clock health.
+
+The component must report either an acceptable time observation or
+unavailable/unhealthy time. Unknown health blocks eligibility.
+The design must bound observation age, synchronization uncertainty,
+and the interval between the final check and invocation.
+
+Whole-second representation does not eliminate measurement uncertainty.
+Future eligibility must account conservatively for the actual time being
+earlier or later than the reported value. If the uncertainty could place
+the observation before creation or at/after expiry, block use.
+Precision, uncertainty bounds, and permitted duration must be compatible.
+
+A process-local monotonic clock can help detect discontinuities by
+comparison with elapsed wall-clock time. It cannot by itself define
+persisted UTC expiry across restarts or establish agreement across workers.
+Restart must establish clock health anew; persisted expiry must not be
+replaced with a fresh duration.
+
+Detected backward or forward clock anomalies block eligibility until the
+time authority satisfies a defined recovery procedure. Do not silently
+clamp time, change expiry, or infer that a clock correction restored safety.
+Terminal rejected, expired, revoked, and consumed records stay terminal.
+Database serialization must prevent later observations from undoing a
+committed terminal transition. A pure time comparison cannot enforce this.
+
+### Operational values still required
+
+Before implementation, select and justify:
+
+- The time source, synchronization mechanism, and health evidence.
+- Maximum approval duration and permitted observation age.
+- Maximum synchronization uncertainty and clock-discontinuity tolerance.
+- The maximum gap between final eligibility checking and invocation.
+- Restart, cross-worker consistency, unhealthy-clock recovery, and
+  read-only investigation procedures.
+
+These are required configuration decisions, not suggested production
+defaults. Tests must establish fail-closed behavior when configuration or
+health evidence is missing. Approval-required execution remains disabled
+until the time rules and every other lifecycle prerequisite are implemented.
+
+### Required future time tests
+
+These cases describe future acceptance requirements, not executed tests.
+
+| Case | Required outcome |
+| --- | --- |
+| Valid time strictly inside a permitted window | Time check passes only; no execution authority |
+| Time before creation | Block use |
+| Time equals or exceeds expiry | Block use |
+| Uncertainty permits time before creation or at/after expiry | Block use |
+| Invalid timestamp or unsupported representation | Reject without normalization |
+| Missing duration or health configuration | Block creation or use as applicable |
+| Approval recorded later while pending | Preserve original expiry |
+| Clock anomaly or stale observation | Block use |
+| Restart or workers disagree on clock health | Block use until authority is established |
+| Clock correction after a committed terminal state | Preserve terminal state |
+| Delay exceeds the permitted dispatch interval | Do not invoke; consumed state stays consumed |
+
 ## Consumption, concurrency, and dispatch
 
 A future protected persistence transaction must serialize competing transitions
