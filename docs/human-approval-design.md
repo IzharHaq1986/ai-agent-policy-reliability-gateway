@@ -33,6 +33,101 @@ A model or agent identity cannot act as the human approver.
 Approver authorization must be checked when recording approval and again
 before consumption. Missing or uncertain authority blocks the transition.
 
+## Proposed approver identity and authority contract
+
+This section specifies future requirements. No identity provider,
+approver authentication, or approval authorization is implemented here.
+The existing API credential continues to map to reliability-reader.
+
+### Identity and human attribution
+
+Trusted application setup must select and configure the identity verifier.
+The verifier must validate credentials and derive a stable identity from
+an accepted authority and subject. Request bodies, display names, email
+text, model output, and caller-supplied role or human flags cannot establish
+that identity. Never use a credential value itself as the audit identity.
+
+Credential verification must establish the intended issuer, audience,
+validity, and applicable revocation/session status using the selected
+mechanism. Required checks depend on that mechanism; no provider or
+credential format is selected by this proposal.
+Missing, invalid, or unverifiable required evidence blocks approval.
+
+Authentication alone does not establish that an actor is an independent
+human approver. Server-owned enrollment and identity governance must
+distinguish eligible human accounts from agents and service identities.
+A service identity cannot gain approval authority by supplying a human
+name or flag. Human attribution remains dependent on the selected identity
+system, account controls, and their documented assurance limits.
+
+### Separation of duties
+
+Compare requester and approver using canonical actor identities.
+A different token, login session, display name, or credential does not
+establish a different person.
+
+Trusted identity governance must define how multiple accounts belonging
+to the same actor are linked or disallowed for approval. Different issuer
+or subject values alone do not prove that two accounts belong to different
+people. If required independence cannot be established, block approval.
+Account linking and identity reassignment must not silently rewrite
+historical actor attribution.
+
+### Scope authority and revalidation
+
+Authenticated identity and permission to approve are separate checks.
+Server-owned authorization rules must grant approval authority for the
+exact captured tool, operation, and applicable resource scope.
+A general login or unrelated role does not grant that authority.
+A model response, candidate approval record, or request body cannot
+supply or expand these rules.
+
+Check human eligibility, separation of duties, and exact scope authority
+when recording approval and again before consumption.
+The future design must define the authoritative source, bounded freshness,
+and consistency of those checks with the consumption transaction.
+An authority revocation committed before consumption must block consumption;
+a stale cached grant must not bypass that ordering requirement.
+
+Credential expiration, credential revocation, account disablement, and
+approval revocation are distinct events. The selected design must specify
+which invalidate later approval use and how that change reaches enforcement.
+Do not silently extend approval expiry or restore terminal state.
+Unavailable required identity, revocation, or authority information blocks
+approval or consumption as applicable.
+
+### Audit and unresolved decisions
+
+Future protected lifecycle evidence must correlate canonical requester and
+approver identities, the approval and request references, the transition,
+and the applicable authority rule/version and trusted time.
+Record only the identity metadata necessary for authorized investigation.
+Never record bearer tokens, private keys, passwords, or raw verifier errors.
+
+Before implementation, resolve the identity verifier and enrollment process,
+human-account assurance, account linking, credential/session lifetime,
+revocation propagation, authority storage and administration, freshness
+bounds, transaction ordering, and identity-data access and retention.
+These requirements do not establish production identity management.
+
+### Required future identity tests
+
+These are future acceptance requirements, not executed test evidence.
+
+| Case | Required outcome |
+| --- | --- |
+| Forged requester, approver, role, or human claim | No approval authority |
+| Requester uses another credential for the same actor | Reject self-approval |
+| Linked accounts represent the same actor | Reject self-approval |
+| Independence cannot be established | Block approval |
+| Agent or service identity claims to be human | Reject approval |
+| Human authenticates but lacks exact scope authority | Reject approval or consumption |
+| Credential is invalid or required verification is unavailable | Block the affected operation |
+| Authority revocation commits before consumption | Block consumption |
+| Stale cached permission conflicts with current authority | Do not consume using the stale grant |
+| Required identity or revocation data is unavailable | Block the affected operation |
+| Valid independent human with scope authority | Identity checks pass only; all other gates still apply |
+
 ## Exact request binding
 
 Trusted code must create a new request identity and immutable snapshot before
