@@ -333,6 +333,65 @@ Terminal recording and validated-result requirements still apply after
 invocation. Approval does not justify releasing an answer withheld by
 required audit failure.
 
+## Proposed approval consumption transaction
+
+These are future requirements. No approval tables, locks, or write paths
+are introduced by this proposal.
+
+### One commit for state and evidence
+
+A successful consumption transaction must save the consumed state, the
+bound execution reference, and the required consumption audit event
+together. If a required write fails before commit, none of those changes
+may become visible. An audit failure must not leave a consumed state
+without its audit record. A consumption audit event records the claim
+on an approval; it does not prove that the simulator ran.
+
+The transaction must check the current approval state, exact request
+binding, expiry, and current authority using evidence that remains valid
+at the consumption decision. An earlier check or cached grant cannot
+substitute for the required ordering with revocation. The separate
+checks required immediately before invocation still apply.
+
+### Competing consumers and revocation
+
+At most one consumer may commit for a given approval. A competing
+consumer must receive a defined non-executing result. If approval
+revocation or relevant authority revocation commits first, consumption
+must fail. If consumption commits first, later approval revocation must
+not undo consumption or be reported as cancellation.
+
+Before implementation, select the database constraints, transaction
+isolation and locking strategy, and the consistency boundary shared with
+authority revocation. The current execution-event lock does not establish
+this approval boundary. If the required ordering cannot be established,
+block consumption.
+
+### Rollback and missing commit acknowledgement
+
+A confirmed rollback establishes that the transaction did not save the
+consumed state or its audit event. A lost commit acknowledgement leaves
+the outcome unknown: the transaction may have committed both changes.
+A rollback attempt after a connection failure does not prove otherwise.
+
+If the outcome is uncertain, do not invoke or automatically retry.
+Reconcile through an authorized read-only path using exact known
+approval, request, and execution references. A later read confirming
+consumption supports investigation; it does not authorize delayed
+dispatch or allow the approval to be reopened.
+
+### Required future persistence tests
+
+These are acceptance requirements for a future implementation.
+
+| Case | Required outcome |
+| --- | --- |
+| Two consumers compete for one approval | At most one commits; the other does not invoke |
+| Approval or authority revocation commits first | Consumption fails; no invocation |
+| Consumption commits before approval revocation | No reversal or cancellation claim |
+| Required audit write fails before commit | No consumed state, execution reference, or audit event becomes visible |
+| Commit succeeds but acknowledgement is lost | No invocation or automatic retry; committed state and evidence remain available for reconciliation |
+
 ## Failure and reconciliation
 
 Consumed means permission was claimed, not that the simulator ran.
