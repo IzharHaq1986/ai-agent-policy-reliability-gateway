@@ -422,6 +422,55 @@ does not inspect future approval records.
 A separate approval-aware reader procedure and failure contract must be
 implemented before an approval-required execution path is enabled.
 
+## Proposed approval reconciliation procedure
+
+This is a future procedure for investigating uncertain approval consumption.
+It does not provide runnable queries, provision a reader, or recover an
+execution. The existing synthetic-attempt runbook does not inspect approvals.
+
+### Preserve the failure and exact references
+
+Preserve the original failure classification, observation time, and calling
+code version when available. Capture the exact approval, request, and
+execution references from trusted attempt context. For execution evidence
+linked through a policy decision, also require the exact policy-event
+reference. Validate each reference against its contract before lookup.
+A missing reference leaves the corresponding finding unresolved. Do not
+substitute a nearby timestamp, item number, or another attempt's reference.
+
+Collect only metadata needed for the investigation. Do not collect
+credentials, raw exception payloads, or withheld answers.
+
+### Inspect one bounded read-only snapshot
+
+Use independently approved connection settings and verify the intended
+database and authorized reader identity. Do not substitute writer or
+administrator access. Inspect a single consistent, read-only snapshot,
+with explicit limits on inspection time and returned rows. Failed checks,
+timeouts, or truncated results make the affected inspection incomplete.
+
+Compare the approval state, bound execution reference, and consumption
+audit event against the exact target references. Inspect execution
+evidence separately using its exact references. Where the two sets of
+records are meant to agree, verify their links without combining evidence
+from different attempts. A snapshot only shows what was visible when it
+was taken; a writer may still commit records later.
+
+### Interpret and report findings
+
+| Observation | Finding |
+| --- | --- |
+| Matching consumed state, execution reference, and consumption audit event; no execution evidence | The claim was recorded. Invocation, completion, and answer delivery are not established. |
+| Matching consumption and execution records | Report what each record supports separately. A completion record does not establish answer delivery or change the original failure into success. |
+| Required references missing or no matching records visible | The relevant outcome remains unresolved. Absence does not establish rollback or non-invocation. |
+| Conflicting references or partial consumption evidence | Preserve the discrepancy and escalate to the application and database engineers. Do not repair records. |
+| Inspection fails or is incomplete | Report the inspection as incomplete. Do not treat it as an empty result. |
+
+Record the references, snapshot context, observed facts, and unresolved
+questions in the approved restricted engineering record. Preserve the
+original failure result. No finding authorizes automatic retry, delayed
+dispatch, record repair, or reopening a consumed approval.
+
 ## Future acceptance matrix
 
 The following cases are required future tests, not executed evidence.
