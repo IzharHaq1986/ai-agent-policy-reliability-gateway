@@ -203,7 +203,12 @@ def main():
             port = bindings[0]["HostPort"]
             passwords = {
                 role: secrets.token_urlsafe(32)
-                for role in ("gateway_audit_writer", "gateway_audit_reader")
+                for role in (
+                    "gateway_audit_writer",
+                    "gateway_audit_reader",
+                    "gateway_approval_proof_writer",
+                    "gateway_approval_proof_reader",
+                )
             }
             execute_sql(
                 "CREATE ROLE gateway_audit_owner NOLOGIN NOSUPERUSER "
@@ -273,10 +278,38 @@ def main():
             ).strip()
             assert settings == "on|on|on"
 
+            execute_sql(
+                (ROOT / "tests/sql/approval_consumption_proof_fixture.sql").read_text()
+            )
+            # Give the dedicated test roles access only to the proof fixture.
+            execute_sql(
+                "GRANT CONNECT ON DATABASE gateway_audit_test "
+                "TO gateway_approval_proof_writer, gateway_approval_proof_reader;"
+                "GRANT USAGE ON SCHEMA approval_consumption_proof "
+                "TO gateway_approval_proof_writer, gateway_approval_proof_reader;"
+                "GRANT SELECT ON approval_consumption_proof.approvals "
+                "TO gateway_approval_proof_writer, gateway_approval_proof_reader;"
+                "GRANT UPDATE (state, execution_id) "
+                "ON approval_consumption_proof.approvals "
+                "TO gateway_approval_proof_writer;"
+                "GRANT INSERT ON approval_consumption_proof.consumption_events "
+                "TO gateway_approval_proof_writer;"
+                "GRANT SELECT ON approval_consumption_proof.consumption_events "
+                "TO gateway_approval_proof_reader;"
+            )
+
             environment = os.environ.copy()
             for variable, role in (
                 ("GATEWAY_TEST_WRITER_DSN", "gateway_audit_writer"),
                 ("GATEWAY_TEST_READER_DSN", "gateway_audit_reader"),
+                (
+                    "GATEWAY_TEST_APPROVAL_PROOF_WRITER_DSN",
+                    "gateway_approval_proof_writer",
+                ),
+                (
+                    "GATEWAY_TEST_APPROVAL_PROOF_READER_DSN",
+                    "gateway_approval_proof_reader",
+                ),
             ):
                 environment[variable] = make_conninfo(
                     host="127.0.0.1",
