@@ -321,10 +321,39 @@ A consumed approval remains consumed even if dispatch is blocked.
 Trusted orchestration must define and bound the gap between this check and
 invocation; approval does not reserve future policy authority indefinitely.
 
-Existing required policy/binding and start-event acknowledgements remain
-preconditions for invocation. A future integration must explicitly define
-their ordering relative to approval consumption.
-No existing audit gate may be removed, bypassed, or replaced by approval.
+### Required order before synthetic invocation
+
+For a future approval-backed synthetic attempt, use the same trusted request,
+approval, policy-event, and execution references wherever they apply.
+Each acknowledgement must belong to this attempt. Keep the existing audit
+gates in the following order.
+
+1. Obtain the internal policy ALLOW decision. Require acknowledgement of
+   the write that saves the decision and exact request binding before
+   attempting consumption.
+2. Consume the bound approval. Require acknowledgement of the commit that
+   saves the consumed state, execution reference, and consumption audit
+   event together before recording a start.
+3. Require acknowledgement of the start audit write for the same attempt.
+4. Recheck the exact request binding, current policy ALLOW, requester
+   authorization, applicable versions, and expiry immediately before
+   invocation. A failed or unavailable check, or a missed dispatch interval,
+   blocks invocation. If every gate passes, invoke the fixed synthetic adapter.
+
+Stop the attempt at the first failed gate. Treat a missing acknowledgement
+as uncertainty about the corresponding write and preserve the original
+failure. Use the authorized read-only reconciliation procedure if needed.
+Do not automatically retry the write or resume dispatch from that attempt.
+
+| Stop point | Evidence and required handling |
+| --- | --- |
+| Policy decision and binding acknowledgement missing | The policy decision and binding may be saved. This attempt does not try to consume approval or record a start. |
+| Approval consumption acknowledgement missing | The consumed state, execution reference, and consumption audit event may be saved. This attempt does not record a start. Do not assume the approval is available or restore it if consumed. |
+| Start audit acknowledgement missing | Consumption was acknowledged and the approval stays spent. The start record may be saved. This attempt does not invoke the simulator. |
+| Final recheck fails or the permitted dispatch interval is missed | Consumption and the start record were acknowledged. The approval stays spent and the simulator is not invoked. Preserve the start record and report the blocked attempt without fabricating simulator outcome evidence. |
+
+An acknowledged start record shows intent to invoke. Its presence alone
+cannot establish that the final recheck passed or that invocation occurred.
 
 The future path must invoke only the fixed synthetic adapter selected by
 trusted code. Caller-supplied decisions or approval records cannot select
@@ -461,6 +490,7 @@ was taken; a writer may still commit records later.
 | Observation | Finding |
 | --- | --- |
 | Matching consumed state, execution reference, and consumption audit event; no execution evidence | The claim was recorded. Invocation, completion, and answer delivery are not established. |
+| Matching consumption evidence and a start record with no terminal record | The claim and intent to invoke were recorded. Use the original attempt's failure classification if available. The start record alone leaves the final check and invocation unresolved. |
 | Matching consumption and execution records | Report what each record supports separately. A completion record does not establish answer delivery or change the original failure into success. |
 | Required references missing or no matching records visible | The relevant outcome remains unresolved. Absence does not establish rollback or non-invocation. |
 | Conflicting references or partial consumption evidence | Preserve the discrepancy and escalate to the application and database engineers. Do not repair records. |
