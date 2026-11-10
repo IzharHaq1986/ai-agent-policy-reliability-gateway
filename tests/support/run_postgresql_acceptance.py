@@ -208,14 +208,14 @@ def main():
                     "gateway_audit_reader",
                     "gateway_approval_proof_writer",
                     "gateway_approval_proof_reader",
+                    "gateway_approval_request_writer",
+                    "gateway_approval_request_reader",
                 )
             }
             # Provision the owners and roles used by the SQL-only approval suites.
             for role in (
                 "gateway_audit_owner",
                 "gateway_approval_owner",
-                "gateway_approval_request_writer",
-                "gateway_approval_request_reader",
                 "gateway_approval_link_writer",
             ):
                 execute_sql(
@@ -238,7 +238,8 @@ def main():
             execute_sql(
                 "REVOKE CONNECT ON DATABASE gateway_audit_test FROM PUBLIC;"
                 "GRANT CONNECT ON DATABASE gateway_audit_test "
-                "TO gateway_audit_writer, gateway_audit_reader;"
+                "TO gateway_audit_writer, gateway_audit_reader, "
+                "gateway_approval_request_writer, gateway_approval_request_reader;"
             )
             for migration in (  # Apply prerequisites before dependent tables.
                 "migrations/001_policy_decision_audit.sql",  # Create policy storage.
@@ -338,6 +339,14 @@ def main():
                 (
                     "GATEWAY_TEST_APPROVAL_PROOF_READER_DSN",
                     "gateway_approval_proof_reader",
+                ),
+                (
+                    "GATEWAY_TEST_APPROVAL_REQUEST_WRITER_DSN",
+                    "gateway_approval_request_writer",
+                ),
+                (
+                    "GATEWAY_TEST_APPROVAL_REQUEST_READER_DSN",
+                    "gateway_approval_request_reader",
                 ),
             ):
                 environment[variable] = make_conninfo(
