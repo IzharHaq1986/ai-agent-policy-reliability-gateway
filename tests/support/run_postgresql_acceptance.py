@@ -210,10 +210,21 @@ def main():
                     "gateway_approval_proof_reader",
                 )
             }
-            execute_sql(
-                "CREATE ROLE gateway_audit_owner NOLOGIN NOSUPERUSER "
-                "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
-            )
+            # Provision the owners and roles used by the SQL-only request suite.
+            for role in (
+                "gateway_audit_owner",
+                "gateway_approval_owner",
+                "gateway_approval_request_writer",
+                "gateway_approval_request_reader",
+            ):
+                execute_sql(
+                    sql.SQL(
+                        "CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOREPLICATION NOBYPASSRLS;"
+                    )
+                    .format(sql.Identifier(role))
+                    .as_string()
+                )
             for role, password in passwords.items():
                 execute_sql(
                     sql.SQL(
@@ -232,12 +243,13 @@ def main():
                 "migrations/001_policy_decision_audit.sql",  # Create policy storage.
                 "migrations/002_request_bindings.sql",  # Create linked request storage.
                 "migrations/003_execution_events.sql",  # Create execution storage.
+                "migrations/004_protected_approval_requests.sql",
             ):  # Keep the migration order explicit.
                 execute_sql(
                     (ROOT / migration).read_text()
                 )  # Apply in this test database.
 
-            for acceptance_file, marker in (  # Run all three SQL suites.
+            for acceptance_file, marker in (  # Run each SQL suite.
                 (  # Preserve the existing policy-schema checks.
                     "tests/sql/test_policy_decision_audit.sql",
                     "AUDIT_SCHEMA_SQL_ACCEPTANCE=PASS",
@@ -249,6 +261,10 @@ def main():
                 (  # Check execution-event storage and permissions.
                     "tests/sql/test_execution_events.sql",
                     "EXECUTION_EVENT_SQL_ACCEPTANCE=PASS",
+                ),
+                (
+                    "tests/sql/test_protected_approval_requests.sql",
+                    "PROTECTED_APPROVAL_REQUEST_SQL_ACCEPTANCE=PASS",
                 ),
             ):  # Require each suite's own success marker.
                 sql_acceptance_output = execute_sql(  # Stop on any SQL failure.
@@ -263,14 +279,16 @@ def main():
                     "UNION ALL "
                     "SELECT count(*) FROM gateway_audit.request_bindings "
                     "UNION ALL "
-                    "SELECT count(*) FROM gateway_audit.execution_events;"
-                ).splitlines()  # Preserve all three row counts.
-                if remaining_rows != ["0", "0", "0"]:  # No table may retain test rows.
+                    "SELECT count(*) FROM gateway_audit.execution_events "
+                    "UNION ALL "
+                    "SELECT count(*) FROM gateway_approval.requests;"
+                ).splitlines()  # Preserve the individual row counts.
+                if remaining_rows != ["0", "0", "0", "0"]:
                     raise RuntimeError("SQL acceptance left persistent test rows")
                 print(marker)  # Report only a completed and cleaned SQL suite.
             print(
                 "SQL_ACCEPTANCE_TEST_ROWS=ROLLED_BACK"
-            )  # Confirm all three tables are empty.
+            )  # Confirm the acceptance tables are empty.
             settings = execute_sql(
                 "SELECT current_setting('fsync'), "
                 "current_setting('full_page_writes'), "
