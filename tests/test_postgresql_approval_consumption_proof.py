@@ -1,4 +1,4 @@
-"""Prove claim and rollback behavior using disposable PostgreSQL tables."""
+"""Prove claim, rollback, and revocation ordering in disposable PostgreSQL."""
 
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +14,10 @@ ROLLBACK_APPROVAL = UUID("22222222-2222-4222-8222-222222222222")
 FIRST_EXECUTION = UUID("33333333-3333-4333-8333-333333333333")
 SECOND_EXECUTION = UUID("44444444-4444-4444-8444-444444444444")
 ROLLBACK_EXECUTION = UUID("55555555-5555-4555-8555-555555555555")
+REVOCATION_FIRST_APPROVAL = UUID("66666666-6666-4666-8666-666666666666")
+CONSUMPTION_FIRST_APPROVAL = UUID("77777777-7777-4777-8777-777777777777")
+BLOCKED_EXECUTION = UUID("88888888-8888-4888-8888-888888888888")
+CONSUMPTION_FIRST_EXECUTION = UUID("99999999-9999-4999-8999-999999999999")
 
 
 @pytest.fixture
@@ -80,15 +84,50 @@ def observed(reader, approval_id):
         ).fetchall()
 
 
-def competing_claim(connection):
+def competing_claim(connection, approval_id, execution_id):
     """Commit only if this contender actually claimed the record."""
-    changed = claim(connection, CONTENTION_APPROVAL, SECOND_EXECUTION)
+    changed = claim(connection, approval_id, execution_id)
     if changed == 1:
-        write_event(connection, CONTENTION_APPROVAL, SECOND_EXECUTION)
+        write_event(connection, approval_id, execution_id)
         connection.commit()
     else:
         connection.rollback()
     return changed
+
+
+def revoke(connection, approval_id):
+    """Withdraw an approved row or report an already committed consumption."""
+    # Target the same row and check the same available state as a claim.
+    updated = connection.execute(
+        "UPDATE approval_consumption_proof.approvals "
+        "SET state = 'revoked' WHERE approval_id = %s AND state = 'approved'",
+        (approval_id,),
+    )
+    if updated.rowcount == 1:
+        return "revoked"
+
+    # Read committed isolation gives this statement a fresh view after the wait.
+    state = connection.execute(
+        "SELECT state FROM approval_consumption_proof.approvals WHERE approval_id = %s",
+        (approval_id,),
+    ).fetchone()
+    if state == ("consumed",):
+        return "too_late"
+    pytest.fail(f"Unexpected approval state after a rejected revocation: {state!r}")
+
+
+def wait_for_blocking(observer, first, second):
+    """Confirm PostgreSQL sees the second writer waiting on the first."""
+    deadline = monotonic() + 5
+    while monotonic() < deadline:
+        blocked = observer.execute(
+            "SELECT %s = ANY(pg_blocking_pids(%s))",
+            (first.info.backend_pid, second.info.backend_pid),
+        ).fetchone()
+        if blocked == (True,):
+            return
+        sleep(0.01)
+    pytest.fail("PostgreSQL did not report the competing lock wait")
 
 
 def test_competing_claims_commit_only_one_consumption(proof_database):
@@ -103,20 +142,10 @@ def test_competing_claims_commit_only_one_consumption(proof_database):
         try:
             assert claim(first, CONTENTION_APPROVAL, FIRST_EXECUTION) == 1
             write_event(first, CONTENTION_APPROVAL, FIRST_EXECUTION)
-            contender = worker.submit(competing_claim, second)
-
-            deadline = monotonic() + 5
-            while monotonic() < deadline:
-                blocked = observer.execute(
-                    "SELECT %s = ANY(pg_blocking_pids(%s))",
-                    (first.info.backend_pid, second.info.backend_pid),
-                ).fetchone()
-                if blocked == (True,):
-                    break
-                sleep(0.01)
-            else:
-                pytest.fail("PostgreSQL did not report the competing lock wait")
-
+            contender = worker.submit(
+                competing_claim, second, CONTENTION_APPROVAL, SECOND_EXECUTION
+            )
+            wait_for_blocking(observer, first, second)
             first.commit()
         finally:
             # Release the first transaction before waiting for the worker to exit.
@@ -140,3 +169,62 @@ def test_failed_audit_insert_rolls_back_consumption(proof_database):
         connection.rollback()
 
     assert observed(reader, ROLLBACK_APPROVAL) == [("approved", None, None, None)]
+
+
+def test_revocation_committing_first_blocks_consumption(proof_database):
+    writer, reader = proof_database
+    with (
+        proof_connection(writer) as first,
+        proof_connection(writer) as second,
+        proof_connection(reader, autocommit=True) as observer,
+        ThreadPoolExecutor(max_workers=1) as worker,
+    ):
+        try:
+            assert revoke(first, REVOCATION_FIRST_APPROVAL) == "revoked"
+            contender = worker.submit(
+                competing_claim, second, REVOCATION_FIRST_APPROVAL, BLOCKED_EXECUTION
+            )
+            wait_for_blocking(observer, first, second)
+            first.commit()
+        finally:
+            # Release the row before joining the worker if the check fails.
+            first.rollback()
+
+        assert contender.result(timeout=12) == 0
+
+    assert observed(reader, REVOCATION_FIRST_APPROVAL) == [
+        ("revoked", None, None, None)
+    ]
+
+
+def test_consumption_committing_first_makes_revocation_too_late(proof_database):
+    writer, reader = proof_database
+    with (
+        proof_connection(writer) as first,
+        proof_connection(writer) as second,
+        proof_connection(reader, autocommit=True) as observer,
+        ThreadPoolExecutor(max_workers=1) as worker,
+    ):
+        try:
+            assert (
+                claim(first, CONSUMPTION_FIRST_APPROVAL, CONSUMPTION_FIRST_EXECUTION)
+                == 1
+            )
+            write_event(first, CONSUMPTION_FIRST_APPROVAL, CONSUMPTION_FIRST_EXECUTION)
+            contender = worker.submit(revoke, second, CONSUMPTION_FIRST_APPROVAL)
+            wait_for_blocking(observer, first, second)
+            first.commit()
+        finally:
+            # Release the row before joining the worker if the check fails.
+            first.rollback()
+
+        assert contender.result(timeout=12) == "too_late"
+
+    assert observed(reader, CONSUMPTION_FIRST_APPROVAL) == [
+        (
+            "consumed",
+            CONSUMPTION_FIRST_EXECUTION,
+            CONSUMPTION_FIRST_EXECUTION,
+            "consumed",
+        )
+    ]
