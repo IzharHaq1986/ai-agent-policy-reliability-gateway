@@ -167,6 +167,41 @@ Version changes invalidate this proposal's approval binding for dispatch.
 The initial design requires new approval rather than silently migrating it.
 Policy must still be evaluated internally against the captured request.
 
+### Persistent request identity and policy-event correlation
+
+Before presenting a request for approval, trusted code must generate a unique
+request ID, validate the request, and receive confirmation that the protected
+request record was saved. Key that record by the server-created request ID.
+Capture the authenticated requester identity, mapped policy principal, tool,
+operation, arguments, resource scope, and applicable versions. Bind the
+approval to that record through a protected reference that cannot be reassigned.
+The approval flow must have no permission to replace or delete the request
+record or edit its captured values. Create a new request record and obtain a
+new approval if the captured values change.
+
+The existing `gateway_audit.request_bindings` row is keyed by
+`policy_event_id`. It captures the policy principal, tool, operation, and
+item ID. It has no request instance ID. Preserve its schema and meaning.
+For a future approval-backed attempt, evaluate current policy from the
+protected request and create a new policy event for the attempt. Save a
+separate protected association from that event ID to the request ID in the
+same transaction as the policy decision and its binding. Each policy event
+must refer to exactly one request instance. The caller must receive
+acknowledgement of that transaction before attempting consumption.
+
+During consumption, load the protected request referenced by the approval
+and use the policy-event ID from the current trusted attempt. Require the
+association to identify the same request ID and the event to record an ALLOW
+decision. Check that the binding belongs to that event and that its principal,
+tool, operation, and item ID exactly match the protected values. Check the
+authenticated requester, scope, and applicable versions against the protected
+request and current trusted context. A binding row's format version does not
+establish compatibility with the approval contract.
+
+Block consumption if any required record or reference is missing, cannot be
+verified, or disagrees. Identical values on a different request ID cannot
+satisfy the association check. This proposal adds no storage or runtime path.
+
 ## Lifecycle and time
 
 The proposed lifecycle uses the following states.
