@@ -4,11 +4,18 @@ BEGIN;
 -- Give the proof its own tables, separate from the application schema.
 CREATE SCHEMA approval_consumption_proof;
 
+-- Model one synthetic approver whose authority can change per exact scope.
+CREATE TABLE approval_consumption_proof.scope_grants (
+    scope text PRIMARY KEY,
+    active boolean NOT NULL
+);
+
 -- Only a consumed approval has an execution reference.
 CREATE TABLE approval_consumption_proof.approvals (
     approval_id uuid PRIMARY KEY,
     state text NOT NULL,
     execution_id uuid UNIQUE,
+    authority_scope text REFERENCES approval_consumption_proof.scope_grants (scope),
     CHECK (
         (state IN ('approved', 'revoked') AND execution_id IS NULL)
         OR (state = 'consumed' AND execution_id IS NOT NULL)
@@ -33,5 +40,15 @@ VALUES
     ('66666666-6666-4666-8666-666666666666', 'approved'),
     ('77777777-7777-4777-8777-777777777777', 'approved'),
     ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'approved');
+
+-- Keep the control and revocation scenarios independent.
+INSERT INTO approval_consumption_proof.scope_grants (scope, active)
+VALUES ('control-scope', true), ('revocation-scope', true);
+
+-- Bind each approval to the exact grant checked during consumption.
+INSERT INTO approval_consumption_proof.approvals (approval_id, state, authority_scope)
+VALUES
+    ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'approved', 'control-scope'),
+    ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'approved', 'revocation-scope');
 
 COMMIT;

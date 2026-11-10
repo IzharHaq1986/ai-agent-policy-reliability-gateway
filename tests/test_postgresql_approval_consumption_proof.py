@@ -21,6 +21,10 @@ CONSUMPTION_FIRST_EXECUTION = UUID("99999999-9999-4999-8999-999999999999")
 LOST_ACK_APPROVAL = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 LOST_ACK_EXECUTION = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 LATER_CLAIM_EXECUTION = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+ACTIVE_SCOPE_APPROVAL = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+REVOKED_SCOPE_APPROVAL = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+ACTIVE_SCOPE_EXECUTION = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+REVOKED_SCOPE_EXECUTION = UUID("01234567-89ab-4cde-8f01-23456789abcd")
 
 
 @pytest.fixture
@@ -260,3 +264,66 @@ def test_lost_commit_acknowledgement_preserves_consumption(proof_database):
     with proof_connection(writer) as later_writer:
         assert claim(later_writer, LOST_ACK_APPROVAL, LATER_CLAIM_EXECUTION) == 0
     assert observed(reader, LOST_ACK_APPROVAL) == committed
+
+
+def consume_with_scope_authority(connection, approval_id, execution_id):
+    """Hold the exact grant lock through consumption and its audit commit."""
+    grant = connection.execute(
+        "SELECT g.active FROM approval_consumption_proof.approvals AS a "
+        "JOIN approval_consumption_proof.scope_grants AS g "
+        "ON g.scope = a.authority_scope WHERE a.approval_id = %s FOR UPDATE OF g",
+        (approval_id,),
+    ).fetchone()
+    # Missing or inactive authority leaves the approval and audit record untouched.
+    if grant != (True,):
+        connection.rollback()
+        return 0
+    return competing_claim(connection, approval_id, execution_id)
+
+
+def test_active_scope_authority_allows_consumption(proof_database):
+    writer, reader = proof_database
+    with proof_connection(writer) as connection:
+        assert (
+            consume_with_scope_authority(
+                connection, ACTIVE_SCOPE_APPROVAL, ACTIVE_SCOPE_EXECUTION
+            )
+            == 1
+        )
+
+    assert observed(reader, ACTIVE_SCOPE_APPROVAL) == [
+        ("consumed", ACTIVE_SCOPE_EXECUTION, ACTIVE_SCOPE_EXECUTION, "consumed")
+    ]
+
+
+def test_scope_authority_revocation_committing_first_blocks_consumption(proof_database):
+    writer, reader = proof_database
+    with (
+        proof_connection(writer) as first,
+        proof_connection(writer) as second,
+        proof_connection(reader, autocommit=True) as observer,
+        ThreadPoolExecutor(max_workers=1) as worker,
+    ):
+        try:
+            # Hold the exact grant row uncommitted until PostgreSQL sees the wait.
+            revoked = first.execute(
+                "UPDATE approval_consumption_proof.scope_grants "
+                "SET active = false WHERE scope = %s AND active",
+                ("revocation-scope",),
+            )
+            assert revoked.rowcount == 1
+            contender = worker.submit(
+                consume_with_scope_authority,
+                second,
+                REVOKED_SCOPE_APPROVAL,
+                REVOKED_SCOPE_EXECUTION,
+            )
+            wait_for_blocking(observer, first, second)
+            first.commit()
+        finally:
+            # Release the grant row before joining the worker on failure.
+            first.rollback()
+
+        assert contender.result(timeout=12) == 0
+
+    assert observed(reader, REVOKED_SCOPE_APPROVAL) == [("approved", None, None, None)]
