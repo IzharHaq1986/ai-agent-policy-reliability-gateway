@@ -1,4 +1,4 @@
-"""Prove claim, rollback, and revocation ordering in disposable PostgreSQL."""
+"""Prove approval consumption behavior in disposable PostgreSQL."""
 
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +18,9 @@ REVOCATION_FIRST_APPROVAL = UUID("66666666-6666-4666-8666-666666666666")
 CONSUMPTION_FIRST_APPROVAL = UUID("77777777-7777-4777-8777-777777777777")
 BLOCKED_EXECUTION = UUID("88888888-8888-4888-8888-888888888888")
 CONSUMPTION_FIRST_EXECUTION = UUID("99999999-9999-4999-8999-999999999999")
+LOST_ACK_APPROVAL = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+LOST_ACK_EXECUTION = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+LATER_CLAIM_EXECUTION = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
 
 @pytest.fixture
@@ -228,3 +231,32 @@ def test_consumption_committing_first_makes_revocation_too_late(proof_database):
             "consumed",
         )
     ]
+
+
+def commit_with_lost_acknowledgement(connection):
+    """Model confirmation loss after PostgreSQL has committed."""
+    connection.commit()
+    raise psycopg.OperationalError("synthetic lost commit acknowledgement")
+
+
+def test_lost_commit_acknowledgement_preserves_consumption(proof_database):
+    writer, reader = proof_database
+    with proof_connection(writer) as connection:
+        # Commit the claim and its audit record in the same transaction.
+        assert claim(connection, LOST_ACK_APPROVAL, LOST_ACK_EXECUTION) == 1
+        write_event(connection, LOST_ACK_APPROVAL, LOST_ACK_EXECUTION)
+        with pytest.raises(
+            psycopg.OperationalError, match="^synthetic lost commit acknowledgement$"
+        ):
+            commit_with_lost_acknowledgement(connection)
+        # Cleanup after the error cannot undo an already committed transaction.
+        connection.rollback()
+
+    # Reconcile with the read-only role, independently of the failed call.
+    committed = [("consumed", LOST_ACK_EXECUTION, LOST_ACK_EXECUTION, "consumed")]
+    assert observed(reader, LOST_ACK_APPROVAL) == committed
+
+    # A separate test writer probes whether the spent approval can be reused.
+    with proof_connection(writer) as later_writer:
+        assert claim(later_writer, LOST_ACK_APPROVAL, LATER_CLAIM_EXECUTION) == 0
+    assert observed(reader, LOST_ACK_APPROVAL) == committed
