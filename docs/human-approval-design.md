@@ -333,7 +333,8 @@ gates in the following order.
    attempting consumption.
 2. Consume the bound approval. Require acknowledgement of the commit that
    saves the consumed state, execution reference, and consumption audit
-   event together before recording a start.
+   event together. Only a confirmed consumption outcome for this attempt
+   permits start recording.
 3. Require acknowledgement of the start audit write for the same attempt.
 4. Recheck the exact request binding, current policy ALLOW, requester
    authorization, applicable versions, and expiry immediately before
@@ -396,18 +397,29 @@ authority revocation. The current execution-event lock does not establish
 this approval boundary. If the required ordering cannot be established,
 block consumption.
 
-### Rollback and missing commit acknowledgement
+### Internal consumption outcomes
 
-A confirmed rollback establishes that the transaction did not save the
-consumed state or its audit event. A lost commit acknowledgement leaves
-the outcome unknown: the transaction may have committed both changes.
-A rollback attempt after a connection failure does not prove otherwise.
+The trusted consumption layer must return one of these internal values for
+the current approval, request, and execution references. Caller-supplied
+values cannot satisfy this gate. These values belong to future approval-backed
+orchestration and add no public response codes.
 
-If the outcome is uncertain, do not invoke or automatically retry.
-Reconcile through an authorized read-only path using exact known
-approval, request, and execution references. A later read confirming
-consumption supports investigation; it does not authorize delayed
-dispatch or allow the approval to be reopened.
+| Outcome | Evidence required | Caller action |
+| --- | --- | --- |
+| `consumed_confirmed` | Acknowledgement of the commit that saved consumption, the bound execution reference, and its audit event for this exact attempt. | Advance to the required start audit. Invocation still requires start-audit acknowledgement and a passing final recheck. |
+| `not_consumed_by_attempt` | Definitive evidence that this attempt saved no consumption. A losing claim or confirmed rollback qualifies. | End the attempt without recording a start or invoking. Another attempt may already have consumed the approval. |
+| `commit_unknown` | The attempt may have committed consumption, but authoritative confirmation is unavailable. A lost commit acknowledgement qualifies. | End the attempt without recording a start, invoking, or automatically retrying. Preserve the failure and use authorized read-only reconciliation. |
+
+A missing, unrecognized, or mismatched result cannot authorize start
+recording. If consumption may have committed and the caller cannot establish
+the outcome from trusted evidence, handle it as `commit_unknown`.
+A rollback attempt after a connection failure cannot establish that
+consumption was rolled back.
+
+Reconcile through an authorized read-only path using exact known approval,
+request, and execution references. A later read can establish what was saved
+for investigation. It cannot turn the stopped attempt into a confirmed
+success, authorize delayed dispatch or automatic retry, or reopen the approval.
 
 ### Required future persistence tests
 
@@ -415,11 +427,11 @@ These are acceptance requirements for a future implementation.
 
 | Case | Required outcome |
 | --- | --- |
-| Two consumers compete for one approval | At most one commits; the other does not invoke |
+| Two consumers compete for one approval | At most one commits. A confirmed losing claim returns `not_consumed_by_attempt` and does not invoke. |
 | Approval or authority revocation commits first | Consumption fails; no invocation |
 | Consumption commits before approval revocation | No reversal or cancellation claim |
-| Required audit write fails before commit | No consumed state, execution reference, or audit event becomes visible |
-| Commit succeeds but acknowledgement is lost | No invocation or automatic retry; committed state and evidence remain available for reconciliation |
+| Required audit write fails and rollback is confirmed | Return `not_consumed_by_attempt`. This attempt saves no consumed state, execution reference, or audit event. |
+| Commit succeeds but acknowledgement is lost | Return or handle `commit_unknown`. No invocation or automatic retry. Committed state and evidence remain available for reconciliation. |
 
 ## Failure and reconciliation
 
