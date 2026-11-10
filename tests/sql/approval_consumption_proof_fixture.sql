@@ -25,12 +25,13 @@ CREATE TABLE approval_consumption_proof.consumption_events (
     CONSTRAINT proof_consumption_event_type CHECK (event_type = 'consumed')
 );
 
--- Give contention, rollback, and each revocation ordering independent rows.
+-- Give each proof scenario an independent approval row.
 INSERT INTO approval_consumption_proof.approvals (approval_id, state)
 VALUES
     ('11111111-1111-4111-8111-111111111111', 'approved'),
     ('22222222-2222-4222-8222-222222222222', 'approved'),
     ('66666666-6666-4666-8666-666666666666', 'approved'),
-    ('77777777-7777-4777-8777-777777777777', 'approved');
+    ('77777777-7777-4777-8777-777777777777', 'approved'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'approved');
 
 COMMIT;
