@@ -250,6 +250,7 @@ def main():
                 "migrations/004_protected_approval_requests.sql",
                 "migrations/005_approval_policy_event_links.sql",
                 "migrations/006_protected_binding_writer.sql",
+                "migrations/007_pending_approval_storage.sql",
             ):  # Keep the migration order explicit.
                 execute_sql(
                     (ROOT / migration).read_text()
@@ -280,6 +281,10 @@ def main():
                     "tests/sql/test_protected_binding_writer.sql",
                     "PROTECTED_BINDING_WRITER_SQL_ACCEPTANCE=PASS",
                 ),
+                (
+                    "tests/sql/test_pending_approval_storage.sql",
+                    "PENDING_APPROVAL_STORAGE_SQL_ACCEPTANCE=PASS",
+                ),
             ):  # Require each suite's own success marker.
                 sql_acceptance_output = execute_sql(  # Stop on any SQL failure.
                     (ROOT / acceptance_file).read_text()  # Read the selected suite.
@@ -297,9 +302,13 @@ def main():
                     "UNION ALL "
                     "SELECT count(*) FROM gateway_approval.requests "
                     "UNION ALL "
-                    "SELECT count(*) FROM gateway_approval.policy_event_request_links;"
+                    "SELECT count(*) FROM gateway_approval.policy_event_request_links "
+                    "UNION ALL "
+                    "SELECT count(*) FROM gateway_approval.approvals "
+                    "UNION ALL "
+                    "SELECT count(*) FROM gateway_approval.lifecycle_events;"
                 ).splitlines()  # Preserve the individual row counts.
-                if remaining_rows != ["0", "0", "0", "0", "0"]:
+                if remaining_rows != ["0", "0", "0", "0", "0", "0", "0"]:
                     raise RuntimeError("SQL acceptance left persistent test rows")
                 print(marker)  # Report only a completed and cleaned SQL suite.
             print(
