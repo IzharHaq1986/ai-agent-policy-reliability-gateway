@@ -1640,6 +1640,32 @@ or cryptographically bind provenance to an attempt.
 No HTTP route, startup wiring, new audit record, schema, dependency,
 operational tool, or deployment is introduced.
 
+## Read-only timesyncd inspection
+
+On a Linux host with systemd, run this command from the repository root using
+the project Python environment.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m gateway.timesyncd_inspection --inspect
+```
+
+The command reads the local boot identity and uses fixed systemctl and busctl
+queries with service activation disabled for bus queries. Each query has a
+two-second deadline and an 8,192-byte stdout limit. It records service and
+source identities before and after reading the packet. Raw timestamps retain
+their microsecond precision.
+
+Exit status 0 means a structurally valid, consistent diagnostic snapshot was
+collected. Exit status 2 means usage, collection, validation, or output failed.
+Reports always contain `measurement_age=unknown`, `source_trust=unverified`,
+and `approval_eligibility=blocked`. Collection duration measures the queries,
+and cannot establish the age of the underlying measurement. Raw command output
+and exception details are excluded from failure reports.
+
+Source authentication, measurement delivery bounds, uncertainty growth,
+configured health limits, and runtime approval require further implementation
+under the [approval time contract](docs/human-approval-design.md#proposed-time-contract).
+
 ## Engineering controls
 
 Use isolated changes, independent validation, and pull-request review.
