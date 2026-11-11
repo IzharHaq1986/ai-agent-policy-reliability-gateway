@@ -20,19 +20,15 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
 """  # A duplicate ID must fail rather than overwrite an existing request.
 
 
-def write_postgresql_protected_request(
-    conninfo: str,
+def protected_request_values(
     *,
     request_id: object,
     snapshot: RequestSnapshot,
     requester_actor_id: object,
     policy_version: object,
     adapter_version: object,
-) -> None:
-    """Return after commit and close. A failed call can still leave a saved row."""
-    if type(conninfo) is not str or not conninfo.strip():
-        raise ValueError("Invalid protected request database configuration")
-
+) -> tuple[str, int, str, str, str, str, int, str, str]:
+    """Validate captured context for both request storage and later comparison."""
     # The caller supplies trusted identity and version context. Check its shape
     # before connecting, without attempting to authenticate or replace it.
     if (
@@ -60,7 +56,7 @@ def write_postgresql_protected_request(
         },
         expected_request_id=request_id,
     )
-    values = (
+    return (
         request["request_id"],
         request["schema_version"],
         requester_actor_id,
@@ -72,6 +68,26 @@ def write_postgresql_protected_request(
         adapter_version,
     )  # Keep checked values separate from SQL syntax.
 
+
+def write_postgresql_protected_request(
+    conninfo: str,
+    *,
+    request_id: object,
+    snapshot: RequestSnapshot,
+    requester_actor_id: object,
+    policy_version: object,
+    adapter_version: object,
+) -> None:
+    """Return after commit and close. A failed call can still leave a saved row."""
+    if type(conninfo) is not str or not conninfo.strip():
+        raise ValueError("Invalid protected request database configuration")
+    values = protected_request_values(
+        request_id=request_id,
+        snapshot=snapshot,
+        requester_actor_id=requester_actor_id,
+        policy_version=policy_version,
+        adapter_version=adapter_version,
+    )
     connection = psycopg.connect(conninfo, connect_timeout=5)
     try:
         connection.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
