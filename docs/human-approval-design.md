@@ -408,6 +408,67 @@ may already have committed. Investigate through an authorized read-only path
 and preserve the original creation and expiry values. Restart requires new
 health evidence in a new component epoch and never resets an existing expiry.
 
+### Candidate timesyncd observation collector
+
+The Hetzner inspection identified readable timesyncd properties and service
+lifetime references. The following contract governs a future local collector.
+The inspected interface alone supplies no verified bound on measurement age.
+A candidate observation still requires the source-trust, health, uncertainty,
+and configuration checks above before it can become eligible.
+
+At startup, create a new collector epoch and verify the local system-bus
+service owner against trusted setup. Capture the host boot identity,
+timesyncd invocation identity, supported interface signature, and active
+source/configuration identity. Recheck those identities around collection.
+A PID alone cannot identify the lifetime. The initial property read establishes
+a baseline and must report measurement age as unknown.
+
+Validate each packet snapshot against the reviewed interface version and
+field meanings. For the initial candidate profile, require NTP version 4,
+server mode 4, normal leap status, stratum 1 through 15, and an ignored flag
+of false. Check timestamp and counter types, representability, and consistency
+before using their values. Retain the raw timestamp precision in the
+observation. Any conversion to canonical whole-second approval timestamps
+requires a reviewed rule and an uncertainty allowance for that conversion.
+Packet values and a source hostname cannot authenticate the source.
+
+Bracket local property reads with elapsed-time observations from the same
+collector epoch. A changed packet counter or property-change notification
+can trigger validation of another snapshot. Neither establishes the
+measurement time or proves that the sample arrived without delay.
+A cached read, repeated counter, or newly received notification cannot reset
+sample age. Reject unexpected counter regression or reset and re-establish
+the baseline in a new collector epoch.
+
+Before assigning a finite age, require independent evidence supporting a
+maximum delay from the underlying measurement to its local observation.
+The bound must cover daemon processing, queuing, transport, and collector
+scheduling. A fast property query or a configured polling interval cannot
+establish that bound. An assumed constant or a difference between adjustable
+wall-clock timestamps cannot substitute for justified elapsed-time evidence.
+
+Require a finite, nonnegative delay bound expressed in the same duration units
+as the elapsed-time readings. If that verified bound is D and receipt occurs at
+local elapsed-time
+reading R, the age upper bound at reading N must include D + (N - R).
+Require the readings to belong to the same epoch, with N >= R. Include
+measurement-age growth in the uncertainty calculation and enforce the
+configured age and uncertainty limits. Without a justified D, report
+measurement age as unknown and block eligibility.
+
+Invalidate outstanding observations after a service-owner change, daemon
+restart, collector restart, subscription loss, interrupted observation,
+source/configuration change, or detected clock anomaly. Suspend or elapsed-time
+discontinuity also invalidates evidence unless the reviewed elapsed-time
+mechanism accounts for the entire interval. Reconnect using a new baseline.
+Preserve existing approval timestamps and expiry.
+
+Future collector tests must cover startup and repeated cached reads, delayed
+notifications, malformed or ignored packets, counter reset, identity changes,
+interrupted observation, and missing delay bounds. A positive case must
+justify its measurement-age bound separately from query duration. Tests using
+synthetic evidence cannot certify the deployed source or its delivery bound.
+
 ### Operational values still required
 
 Before implementation, select and justify:
