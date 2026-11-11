@@ -210,6 +210,7 @@ def main():
                     "gateway_approval_proof_reader",
                     "gateway_approval_request_writer",
                     "gateway_approval_request_reader",
+                    "gateway_protected_binding_writer",
                 )
             }
             # Provision the owners and roles used by the SQL-only approval suites.
@@ -239,7 +240,8 @@ def main():
                 "REVOKE CONNECT ON DATABASE gateway_audit_test FROM PUBLIC;"
                 "GRANT CONNECT ON DATABASE gateway_audit_test "
                 "TO gateway_audit_writer, gateway_audit_reader, "
-                "gateway_approval_request_writer, gateway_approval_request_reader;"
+                "gateway_approval_request_writer, gateway_approval_request_reader, "
+                "gateway_protected_binding_writer;"
             )
             for migration in (  # Apply prerequisites before dependent tables.
                 "migrations/001_policy_decision_audit.sql",  # Create policy storage.
@@ -247,6 +249,7 @@ def main():
                 "migrations/003_execution_events.sql",  # Create execution storage.
                 "migrations/004_protected_approval_requests.sql",
                 "migrations/005_approval_policy_event_links.sql",
+                "migrations/006_protected_binding_writer.sql",
             ):  # Keep the migration order explicit.
                 execute_sql(
                     (ROOT / migration).read_text()
@@ -272,6 +275,10 @@ def main():
                 (
                     "tests/sql/test_approval_policy_event_links.sql",
                     "APPROVAL_POLICY_EVENT_LINK_SQL_ACCEPTANCE=PASS",
+                ),
+                (
+                    "tests/sql/test_protected_binding_writer.sql",
+                    "PROTECTED_BINDING_WRITER_SQL_ACCEPTANCE=PASS",
                 ),
             ):  # Require each suite's own success marker.
                 sql_acceptance_output = execute_sql(  # Stop on any SQL failure.
@@ -347,6 +354,10 @@ def main():
                 (
                     "GATEWAY_TEST_APPROVAL_REQUEST_READER_DSN",
                     "gateway_approval_request_reader",
+                ),
+                (
+                    "GATEWAY_TEST_PROTECTED_BINDING_WRITER_DSN",
+                    "gateway_protected_binding_writer",
                 ),
             ):
                 environment[variable] = make_conninfo(
