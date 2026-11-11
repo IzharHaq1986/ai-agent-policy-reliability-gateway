@@ -234,6 +234,77 @@ A clock correction must not revive expired, revoked, rejected, or consumed state
 Clock authority, anomaly detection, timestamp precision, and permitted approval
 duration must be resolved before implementation; no production defaults exist.
 
+### Persistent approval record
+
+Future approval storage must use the following logical fields. This contract
+requires a separate migration and protected write operations before runtime use.
+
+| Field or field group | Storage requirement |
+| --- | --- |
+| `approval_id` | Unique server-created identity for one approval lifecycle. Immutable and never reassigned. |
+| `request_id` | Required foreign-key reference to the exact protected request in `gateway_approval.requests`. Immutable throughout the lifecycle. |
+| `approval_contract_version` | Required integer 1 for this initial lifecycle contract. Immutable. A version change requires a new approval. |
+| `created_at`, `expires_at` | Required canonical UTC values under the time contract below. Set while pending, with creation strictly before expiry. Immutable. |
+| `state`, `state_version` | One recognized lifecycle state and a positive revision. Creation starts at pending, revision 1. Each permitted transition increments the revision exactly once. |
+| `decision_kind`, `decision_actor_id`, `decision_at`, `decision_authority_ref` | Either all absent or one complete authenticated human decision. Kind is approved or rejected. Authority evidence identifies the applicable rule, scope, and version. Once recorded, preserve these values. |
+| `execution_id`, `consumed_at`, `consumption_policy_event_id` | Either all absent or one complete consumption binding. The execution ID must be unique across approvals. Once recorded, preserve these values. The policy event must link to this approval's exact request. |
+| `last_lifecycle_event_id` | Required reference to the event for the current revision and state. Creation requires its own pending event. |
+
+Use the protected request as the source of captured requester, tool, arguments,
+scope, and version context. Lifecycle updates cannot replace that request or
+rewrite its captured values. A stored ID or authority reference does not itself
+establish authenticated identity or current authority.
+
+### State-specific field requirements
+
+| Saved state | Human decision fields | Consumption fields | Required lifecycle evidence |
+| --- | --- | --- | --- |
+| pending | All absent | All absent | Creation event at revision 1. |
+| approved | Complete approved decision | All absent | Authorized human approval event. |
+| rejected | Complete rejected decision | All absent | Authorized human rejection event. |
+| expired | All absent, or preserve the complete earlier approved decision | All absent | Expiry event with a trusted observation establishing expiry. |
+| revoked | All absent, or preserve the complete earlier approved decision | All absent | Revocation event with the authenticated revoker, relevant authority, and trusted observation. |
+| consumed | Preserve the complete earlier approved decision | All required | Consumption event with the same execution and policy-event references. |
+
+Human decision times must fall within the fixed approval window under the
+trusted-time rules. Consumption must satisfy the same eligibility rules.
+For consumption, require created_at <= decision_at <= consumed_at < expires_at,
+subject to the trusted-time uncertainty checks.
+An expiry transition may be recorded after the window ends. The saved state
+can lag actual expiry, so checking the state alone cannot establish eligibility.
+Reject partial field groups, unsupported versions, and any state or transition
+that conflicts with this table or the allowed transitions above. Preserve
+terminal states and historical human attribution.
+
+### Atomic lifecycle evidence and permissions
+
+Each lifecycle event must have a unique event ID and a unique
+`(approval_id, state_version)` pair. Correlate the exact approval and request,
+previous and resulting state, revision, authenticated actor where applicable,
+authority evidence, and trusted observation. Consumption evidence must also
+carry the exact execution and policy-event references. Exclude credentials,
+raw verifier errors, and unnecessary request or answer content.
+
+Creation and every transition must commit the updated record and its required
+event together. The current record's event reference must match its approval
+ID, revision, and state. A transition must verify the expected current state
+and revision inside the same serialization boundary. A stale revision, failed
+state check, or failed audit insert blocks the complete change. Keep earlier
+events intact. Lost commit confirmation retains the uncertainty rules below.
+
+Use a separate migration owner with no application login. Ordinary application
+roles must access narrowly granted creation, decision, expiry, revocation,
+consumption, or read operations as appropriate. Creation may produce only
+pending records. Deny arbitrary state updates, request reassignment, event
+rewrites, and deletion through those roles. Protected transition operations
+must enforce the actor and authority checks for their specific action.
+Future migration acceptance must prove the constraints and protected write
+boundary enforce these requirements under competing sessions and failed writes.
+
+The identity verifier, human attribution, separation of duties, scope authority,
+and healthy trusted-time source remain required before runtime approval can be
+enabled. A complete-looking record cannot supply any of those prerequisites.
+
 ## Proposed time contract
 
 This section is a proposal, not implemented behavior. Existing audit and
