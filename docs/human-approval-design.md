@@ -358,6 +358,56 @@ Terminal rejected, expired, revoked, and consumed records stay terminal.
 Database serialization must prevent later observations from undoing a
 committed terminal transition. A pure time comparison cannot enforce this.
 
+### Trusted evidence for pending creation
+
+Trusted orchestration must obtain a new observation directly from the
+configured time component before creating a pending approval. The component
+must validate the configured source and synchronization health through
+server-controlled channels. A timestamp and a caller-supplied healthy flag
+cannot substitute for that validation.
+
+An acceptable observation must carry the following evidence, bound together
+by the trusted component.
+
+| Evidence | Required meaning |
+| --- | --- |
+| Source identity and configuration version | Identify the reviewed source, source-validation rules, and active server-owned configuration. |
+| Observation reference and component epoch | Identify this sample and the current component lifetime. Evidence from a previous lifetime is ineligible after restart. |
+| Canonical UTC observation | Supply the whole-second UTC value used as the creation timestamp under the representation contract. |
+| Sample and health-check timing | Include local monotonic observations for the UTC sample and its supporting health check, measured in the same component epoch. |
+| Uncertainty bound | Supply a finite, nonnegative error bound supported by the source evidence. Include representation precision, elapsed time, and the configured drift allowance. |
+| Health evidence reference | Refer to the verified synchronization and anomaly checks for this sample. Preserve only the metadata needed for authorized investigation. |
+
+The component may instead report unavailable or unhealthy time. Missing,
+malformed, conflicting, or unverifiable evidence blocks creation. A readable
+local clock or an observation-shaped object supplied by an agent cannot
+establish the source, health, or provenance of an observation.
+
+Before returning an acceptable observation, the component must check its
+source and configuration against trusted setup. It must calculate sample
+age and health-evidence age with its own monotonic clock. Both ages must be
+nonnegative and within their explicitly configured limits. It must reject a
+clock anomaly, epoch mismatch, stale health evidence, or uncertainty beyond
+the configured maximum. Unknown or contradictory health is ineligible.
+Monotonic readings from another worker cannot be subtracted from local readings.
+Each worker must obtain evidence through its reviewed component boundary.
+
+Immediately before the creation write, trusted orchestration must revalidate
+the observation through that component. The component must account for elapsed
+time and uncertainty when establishing the earliest and latest possible current
+time. Require the proposed expiry to be strictly later than the latest possible
+current time. Derive creation and expiry from trusted code and the configured
+positive duration, within the maximum approval duration. Missing configuration,
+overflow, or failure to establish these bounds blocks creation.
+The maximum duration must also hold against the earliest possible creation
+time so uncertainty cannot extend the permitted window.
+
+If freshness or clock health is lost during persistence, stop the creation
+path and preserve the original failure and exact attempt references. A write
+may already have committed. Investigate through an authorized read-only path
+and preserve the original creation and expiry values. Restart requires new
+health evidence in a new component epoch and never resets an existing expiry.
+
 ### Operational values still required
 
 Before implementation, select and justify:
@@ -365,6 +415,8 @@ Before implementation, select and justify:
 - The time source, synchronization mechanism, and health evidence.
 - Maximum approval duration and permitted observation age.
 - Maximum synchronization uncertainty and clock-discontinuity tolerance.
+- Health-evidence age and the drift allowance used to grow uncertainty.
+- Source validation, observation provenance, and component epoch rules.
 - The maximum gap between final eligibility checking and invocation.
 - Restart, cross-worker consistency, unhealthy-clock recovery, and
   read-only investigation procedures.
@@ -386,6 +438,8 @@ These cases describe future acceptance requirements, not executed tests.
 | Uncertainty permits time before creation or at/after expiry | Block use |
 | Invalid timestamp or unsupported representation | Reject without normalization |
 | Missing duration or health configuration | Block creation or use as applicable |
+| Missing, forged, stale, or unverifiable observation or health evidence | Block creation |
+| Health or freshness lost during the creation write | Stop the creation path and reconcile possible saved state without changing its timestamps |
 | Approval recorded later while pending | Preserve original expiry |
 | Clock anomaly or stale observation | Block use |
 | Restart or workers disagree on clock health | Block use until authority is established |
