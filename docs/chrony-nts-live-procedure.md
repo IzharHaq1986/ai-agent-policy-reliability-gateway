@@ -180,3 +180,7 @@ The [internal command-capture helper](nts-command-capture.md) now provides a
 separate, tested building block for query deadlines and streaming output bounds.
 It is not integrated into a live controller and does not satisfy the independent
 container-stop or complete evidence-bundle requirements by itself.
+
+The [independent container watchdog](nts-container-watchdog.md) adds a separate
+deadline-removal building block and synthetic Docker proof. It does not launch
+the live experiment or complete the remaining controller requirements.
