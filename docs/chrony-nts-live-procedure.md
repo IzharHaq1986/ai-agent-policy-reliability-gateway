@@ -184,3 +184,7 @@ container-stop or complete evidence-bundle requirements by itself.
 The [independent container watchdog](nts-container-watchdog.md) adds a separate
 deadline-removal building block and synthetic Docker proof. It does not launch
 the live experiment or complete the remaining controller requirements.
+
+The [bounded evidence serializer](nts-evidence-bundle.md) separately limits the
+complete encoded diagnostic report. It performs no file persistence or live
+integration and cannot establish trusted time.
