@@ -138,6 +138,15 @@ jobs:
           "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
             --cache-dir "$RUNNER_TEMP/policy-mypy-cache"
 
+      - name: Check independent watchdog types
+        shell: bash
+        run: |
+          set -euo pipefail
+          MYPYPATH=tests/support "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
+            --strict --follow-imports=silent \
+            --cache-dir "$RUNNER_TEMP/watchdog-mypy-cache" \
+            tests/support/nts_container_watchdog.py
+
       - name: Prepare isolated PostgreSQL image
         shell: bash
         run: |
@@ -151,6 +160,13 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/policy-venv/bin/python" \
             tests/support/run_container_acceptance.py
+
+      - name: Check independent watchdog with synthetic containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" \
+            tests/support/run_nts_watchdog_acceptance.py --accept
 
       - name: Test policy and PostgreSQL acceptance
         shell: bash
