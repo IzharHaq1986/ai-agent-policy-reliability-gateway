@@ -65,3 +65,7 @@ Missing evidence must leave eligibility blocked.
 - [Ubuntu Noble chrony package](https://packages.ubuntu.com/noble-updates/chrony)
 - [Cloudflare NTS endpoint](https://developers.cloudflare.com/time-services/nts/)
 - [NTS protocol and security considerations](https://www.rfc-editor.org/rfc/rfc8915.html)
+
+The [live procedure review specification](chrony-nts-live-procedure.md) defines
+the next stage's requirements. It is not an executable launch command; the
+bounded live controller still needs implementation and validation.
