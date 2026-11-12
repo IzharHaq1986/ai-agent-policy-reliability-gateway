@@ -175,3 +175,8 @@ NTS authentication has security limits independent of source accuracy and delay.
 - [chronyc 4.5](https://chrony-project.org/doc/4.5/chronyc.html)
 - [chrony 4.5 configuration](https://chrony-project.org/doc/4.5/chrony.conf.html)
 - [NTS security considerations](https://www.rfc-editor.org/rfc/rfc8915.html#section-9)
+
+The [internal command-capture helper](nts-command-capture.md) now provides a
+separate, tested building block for query deadlines and streaming output bounds.
+It is not integrated into a live controller and does not satisfy the independent
+container-stop or complete evidence-bundle requirements by itself.
