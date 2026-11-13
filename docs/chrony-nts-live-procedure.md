@@ -188,3 +188,7 @@ the live experiment or complete the remaining controller requirements.
 The [bounded evidence serializer](nts-evidence-bundle.md) separately limits the
 complete encoded diagnostic report. It performs no file persistence or live
 integration and cannot establish trusted time.
+
+The [private evidence publisher](nts-evidence-publication.md) adds exclusive
+report publication and explicit acknowledgement outcomes. It remains separate
+from the live controller and does not establish time-source trust.

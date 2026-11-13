@@ -146,7 +146,8 @@ jobs:
             --strict --follow-imports=silent \
             --cache-dir "$RUNNER_TEMP/watchdog-mypy-cache" \
             tests/support/nts_container_watchdog.py \
-            tests/support/nts_evidence_bundle.py
+            tests/support/nts_evidence_bundle.py \
+            tests/support/nts_evidence_publisher.py
 
       - name: Prepare isolated PostgreSQL image
         shell: bash

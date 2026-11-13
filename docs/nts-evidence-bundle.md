@@ -87,3 +87,7 @@ not establish source accuracy, freshness, uncertainty, successful cleanup, or
 approval authority. The live controller still needs orchestration, health and
 identity checks, source/sample correlation, verified resource cleanup, and safe
 artifact persistence. Live NTS collection and runtime approval remain blocked.
+
+The separate [private evidence publisher](nts-evidence-publication.md) uses this
+serializer to save reports through a trusted directory descriptor. It does not
+change this serializer's pure in-memory interface or enable live collection.
