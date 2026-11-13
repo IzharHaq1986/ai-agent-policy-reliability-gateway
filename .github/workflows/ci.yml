@@ -138,14 +138,15 @@ jobs:
           "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
             --cache-dir "$RUNNER_TEMP/policy-mypy-cache"
 
-      - name: Check independent watchdog types
+      - name: Check experiment helper types
         shell: bash
         run: |
           set -euo pipefail
           MYPYPATH=tests/support "$RUNNER_TEMP/policy-venv/bin/python" -m mypy \
             --strict --follow-imports=silent \
             --cache-dir "$RUNNER_TEMP/watchdog-mypy-cache" \
-            tests/support/nts_container_watchdog.py
+            tests/support/nts_container_watchdog.py \
+            tests/support/nts_evidence_bundle.py
 
       - name: Prepare isolated PostgreSQL image
         shell: bash
