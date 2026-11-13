@@ -154,7 +154,8 @@ def stopped(pid):
     path = Path(f"/proc/{pid}/stat")
     try:
         return path.read_text().rsplit(")", 1)[1].split()[0] == "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # Linux can lose the process after opening /proc but before reading it.
         return True
 
 
@@ -297,3 +298,21 @@ def test_overflow_stops_and_reaps_a_still_running_producer(helper, tmp_path):
         run(helper, code)
     pid = int(record.read_text())
     assert not Path(f"/proc/{pid}").exists(), "overflow producer was not reaped"
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError(), ProcessLookupError()])
+def test_disappeared_process_during_proc_read_counts_as_gone(monkeypatch, failure):
+    def disappeared(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(Path, "read_text", disappeared)
+    assert stopped(123)
+
+
+def test_inaccessible_proc_state_is_not_proof_of_stopping(monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError("synthetic denied access")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(PermissionError):
+        stopped(123)
