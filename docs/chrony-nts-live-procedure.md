@@ -192,3 +192,7 @@ integration and cannot establish trusted time.
 The [private evidence publisher](nts-evidence-publication.md) adds exclusive
 report publication and explicit acknowledgement outcomes. It remains separate
 from the live controller and does not establish time-source trust.
+
+The [read-only workload identity helper](nts-workload-identity.md) adds bracketed
+container/process observations and a synthetic restart proof. It remains separate
+from live orchestration and does not establish trusted time or watchdog health.

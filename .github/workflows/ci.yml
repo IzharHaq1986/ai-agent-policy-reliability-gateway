@@ -147,7 +147,8 @@ jobs:
             --cache-dir "$RUNNER_TEMP/watchdog-mypy-cache" \
             tests/support/nts_container_watchdog.py \
             tests/support/nts_evidence_bundle.py \
-            tests/support/nts_evidence_publisher.py
+            tests/support/nts_evidence_publisher.py \
+            tests/support/nts_workload_identity.py
 
       - name: Prepare isolated PostgreSQL image
         shell: bash
@@ -169,6 +170,13 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/policy-venv/bin/python" \
             tests/support/run_nts_watchdog_acceptance.py --accept
+
+      - name: Check workload identity with a synthetic restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/policy-venv/bin/python" \
+            tests/support/run_nts_identity_acceptance.py --accept
 
       - name: Test policy and PostgreSQL acceptance
         shell: bash
