@@ -196,3 +196,8 @@ from the live controller and does not establish time-source trust.
 The [read-only workload identity helper](nts-workload-identity.md) adds bracketed
 container/process observations and a synthetic restart proof. It remains separate
 from live orchestration and does not establish trusted time or watchdog health.
+
+The [future watchdog health-supervision contract](nts-container-watchdog.md#future-health-supervision-contract)
+defines independent progress checks, bounded failure handling, and cleanup
+coordination. It is design only; the existing watchdog does not implement that
+protocol, and live execution remains gated on its implementation and validation.
