@@ -150,7 +150,19 @@ jobs:
             tests/support/nts_evidence_publisher.py \
             tests/support/nts_workload_identity.py \
             tests/support/nts_health_protocol.py \
-            tests/support/nts_health_transport.py
+            tests/support/nts_health_transport.py \
+            tests/support/nts_child_handoff_fixture.py \
+            tests/support/run_nts_child_handoff_acceptance.py
+
+      # Check real local inheritance without Docker, a watchdog, or time exchange.
+      - name: Check synthetic child endpoint handoff
+        shell: bash
+        run: |
+          # Any failed proof or cleanup must fail this validation job.
+          set -euo pipefail
+          # Use explicit five-second startup and two-second cleanup test budgets.
+          "$RUNNER_TEMP/policy-venv/bin/python" \
+            tests/support/run_nts_child_handoff_acceptance.py --accept 5 2
 
       - name: Prepare isolated PostgreSQL image
         shell: bash
