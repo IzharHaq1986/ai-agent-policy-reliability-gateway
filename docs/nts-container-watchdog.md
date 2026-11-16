@@ -259,3 +259,62 @@ that the expected watchdog actually generated it in its deadline loop. These
 synthetic tests do not demonstrate supervision under a blocked collector or
 real watchdog/Docker failure. Live integration and its proofs remain pending;
 measurement age remains unknown and approval eligibility blocked.
+
+### Isolated private packet transport
+
+`tests/support/nts_health_transport.py` adds a Linux-only transport building
+block. `create_pair` returns two owned, unnamed Unix sequenced-packet endpoints,
+created with nonblocking and close-on-exec flags and verified before return.
+There is no listener, filesystem socket path, network port, external socket
+adoption, or descriptor-handoff API. The existing watchdog does not use it.
+
+Trusted code supplies `buffer_bytes` and `effective_buffer_limit` explicitly.
+Requests range from 4 KiB to 1 MiB; the accepted ceiling must be at least twice
+the request and at most 2 MiB. The helper reads back both endpoints' send and
+receive settings and requires each to be between the request and ceiling.
+Linux can double or clamp requested values; a readback outside the accepted
+range fails setup. These are transport resource bounds, not clock-health limits.
+For Unix sockets, SO_SNDBUF affects flow control but SO_RCVBUF does not. Bounding
+both senders limits their queues; receive-setting readback alone cannot prove
+queue capacity. No exact queued-message count or memory-allocation total is
+inferred from these byte settings.
+
+Each `send` or `receive` makes one nonblocking socket-operation attempt, without
+an application readiness wait, retry loop, remainder send, or application queue.
+`WouldBlock` reports temporary lack of progress and leaves the endpoint open.
+The future supervisor must apply the existing deadline and protocol failure
+rules; it must not busy-retry, extend a deadline, or treat this as health evidence.
+This is not a hard execution-time guarantee under host or kernel failure.
+
+Packets must contain 1 through 2,048 bytes, reusing the protocol limit. Oversized
+outgoing input fails before sending. Truncated incoming records, unexpected
+flags, or ancillary-data truncation fail and close the receiving endpoint.
+Receive uses a zero-sized ancillary buffer: Linux discards excess SCM_RIGHTS
+references and closes them, so passed descriptors are not accepted into the
+application. Synthetic tests check descriptor counts and rejection of both
+rights and credential ancillary input. This behavior is why unsupported
+platforms fail instead of falling back to another socket type.
+
+A zero-length record and orderly EOF cannot be distinguished from the returned
+empty bytes alone. Both produce `EMPTY_OR_CLOSED`, close the endpoint, and supply
+no health evidence. Known peer-disconnect send errors have a separate reason;
+other permanent operation errors also close the affected endpoint. Fixed errors
+never echo packet contents. A `cleanup_complete` field records close failures;
+an uncertain descriptor close is not retried. The owner must close the other
+endpoint too, including on setup, protocol, or orchestration failure.
+
+The synthetic tests exercise actual local sockets, bounded backpressure,
+truncation, closure, descriptor cleanup, and one exchange using the isolated
+protocol. They do not establish sender identity or watchdog progress. Non-
+inheritability prevents implicit inheritance through exec, not duplication by
+fork. Future trusted launch code must explicitly restrict handoff and close all
+unrelated copies. Socket-pair peer credentials obtained before handoff must not
+be presented as the later child process's identity. No watchdog launch,
+supervisor loop, Docker action, or live collection is implemented here.
+Measurement age remains unknown and approval eligibility remains blocked.
+
+Transport semantics are grounded in the primary references:
+
+- [Python 3.12 socket API](https://docs.python.org/3.12/library/socket.html)
+- [Linux Unix-domain socket semantics](https://man7.org/linux/man-pages/man7/unix.7.html)
+- [Linux socket buffer semantics](https://man7.org/linux/man-pages/man7/socket.7.html)
