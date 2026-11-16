@@ -231,3 +231,31 @@ clock accuracy, authenticated time-source identity, measurement freshness,
 acceptable uncertainty, or shutdown under host failure. Measurement age remains
 unknown and approval eligibility remains blocked. Public examples and tests must
 use synthetic references; operational receipts and planning stay private.
+
+### Isolated protocol building block
+
+`tests/support/nts_health_protocol.py` implements only bounded version-1 JSON
+messages and a single-owner exchange state machine. Times are explicit integer
+host-monotonic nanoseconds; positive response-timeout and generation-age limits
+have no defaults. Duration limits are inclusive; the original absolute deadline
+is exclusive. Sequence numbers increase within the session. A trusted injected
+token factory must produce unpredictable 256-bit lowercase hexadecimal tokens;
+format checking and adjacent-token reuse detection do not prove randomness.
+
+`Session.challenge` records one outstanding challenge. `respond` constructs a
+matching response using supplied lifetime references and generation time.
+`Session.accept` checks exact schema, types, references, challenge, ordering,
+response latency, and generation age. `Session.check` allows a future supervisor
+to detect an expired outstanding exchange without receiving a reply. Exchange
+errors permanently fail that session. Successful validation returns no execution
+permission and no continuing health lease.
+
+The helper performs no I/O, clock reads, process verification, transport setup,
+arming, or cleanup. Its caller must establish trusted identity and clock-domain
+provenance, schedule independent checks, enforce all other supervision limits,
+and handle disconnects or interrupted observation. A response builder can be
+called by any code; only future protected transport integration can establish
+that the expected watchdog actually generated it in its deadline loop. These
+synthetic tests do not demonstrate supervision under a blocked collector or
+real watchdog/Docker failure. Live integration and its proofs remain pending;
+measurement age remains unknown and approval eligibility blocked.
