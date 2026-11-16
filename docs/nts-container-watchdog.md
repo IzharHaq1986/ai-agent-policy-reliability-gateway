@@ -318,3 +318,149 @@ Transport semantics are grounded in the primary references:
 - [Python 3.12 socket API](https://docs.python.org/3.12/library/socket.html)
 - [Linux Unix-domain socket semantics](https://man7.org/linux/man-pages/man7/unix.7.html)
 - [Linux socket buffer semantics](https://man7.org/linux/man-pages/man7/socket.7.html)
+
+### Future restricted child-channel handoff
+
+Status: design only. Neither the transport nor the watchdog currently implements
+this handoff. The following requirements must be implemented and synthetically
+validated before a launch-bound health-readiness claim is possible.
+
+#### Trusted launch and endpoint ownership
+
+The trusted supervisor selects a fixed absolute interpreter/executable, reviewed
+child entrypoint, argument schema, controlled environment, and trusted working
+directory. Check the reviewed code/configuration identity and expected privileges
+before launch. No shell, PATH-based executable selection, caller-supplied module,
+command, descriptor number, or environment override may select the child.
+Python launch code must avoid preexec_fn and use explicit subprocess options.
+This profile is trusted test infrastructure, not an agent tool execution path.
+
+Create the private pair immediately before the restricted launch. Keep both ends
+non-inheritable in the parent and use close_fds with pass_fds containing only the
+child endpoint, in addition to explicitly configured standard streams. Standard
+input is closed or DEVNULL; diagnostic outputs have separate bounded handling
+and cannot stand in for health evidence. Do not redirect the health endpoint
+through stdout. The supervisor keeps its end and closes its child-end copy after
+handoff; the child closes unrelated copies and restores close-on-exec on its
+owned endpoint immediately after entry. Endpoint adoption must be a separately
+validated trusted bootstrap operation, not a general external-FD API.
+
+The launcher must prevent unrelated concurrent forks from retaining either end.
+The reviewed child must not duplicate or transfer its endpoint or replace itself
+through another exec. It may launch only fixed bounded query helpers with
+close_fds and no health endpoint in pass_fds; every such launch path must close
+fork-created copies before helper execution. Non-inheritable flags alone do not
+prevent fork copies. A check of the two intended processes cannot prove that no
+third process holds a copy. Descriptor confinement therefore requires an
+explicit trusted-code and launch-environment assumption, plus tests of all
+selected launch paths. If that assumption cannot be justified, readiness remains
+blocked.
+
+#### Process lifetime and bootstrap sequence
+
+1. Record boot, collection, owned-container identity, ownership token, and the
+   original monotonic deadline before launch. Require explicit startup and
+   cleanup budgets; no production defaults or replacement deadline are supplied.
+2. Retain the direct-child launch handle under one trusted owner. Establish a
+   Linux pidfd for that child before any reaping, with supported signal/wait
+   semantics and no competing waiter or automatic child reaper. If the platform
+   or environment cannot preserve that association, fail startup. Never attach
+   a pidfd to an arbitrary PID supplied in a message.
+3. Observe boot, child PID and kernel start ticks, expected command/code profile,
+   and effective privileges through bounded trusted local inspection. Reject
+   exit, inaccessible evidence, mismatches, or inconsistent observations. Bracket
+   bootstrap and health exchanges with the retained lifetime/exit checks.
+4. Supply immutable collection context through a bounded, separately versioned
+   bootstrap message on the inherited endpoint. Its schema and adoption checks
+   require separate implementation; do not reinterpret bootstrap as a health
+   reply. The child checks its own lifetime against that context. Only after
+   trusted lifetime observations agree may either side initialize the existing
+   health protocol for that exact attempt.
+5. Require successful restricted handoff, observed expected lifetime, a matching
+   watchdog armed event, and a fresh challenge/response before the future
+   supervisor reports launch-bound readiness. Every other policy, isolation,
+   time-budget, and authorization gate must still pass before container start.
+
+A pidfd is a lifetime/exit reference and permits targeted signaling; it does not
+attest executable contents or identify the sender of a socket packet. PID and
+start ticks are observation references, not cryptographic identities. Matching
+observations do not prove uninterrupted continuity or detect every same-process
+exec. Readiness depends on the reviewed no-replacement profile and the stated
+host trust assumptions; never report executable attestation from these checks.
+
+Initial process creation can itself block beyond an application timeout on some
+platforms. Startup time counts against the existing absolute deadline, and
+supervision must remain independent of potentially blocked launch or collection.
+A late acknowledgement cannot restore readiness. Record a failed or unresolved
+attempt if the deadline passes; do not claim a hard launch-time bound under host
+or kernel failure. No container may start while handoff is incomplete.
+
+#### What establishes the association
+
+| Evidence | Supported conclusion | Unsupported conclusion |
+| --- | --- | --- |
+| Trusted creation and restricted endpoint handoff | Local channel association under descriptor-confinement assumptions | No other process can ever obtain a copy |
+| Retained direct-child handle, pidfd, and matching local observations | Observed expected child lifetime and exit state | Every reply was sent by that process |
+| Fresh matching protocol exchange | Valid response to the current challenge on that channel | Independent sender identity or future responsiveness |
+| Creation-time socket peer credentials | Credentials recorded when the connection/pair was established | Identity of a later inheriting child |
+
+The selected minimal design combines controlled handoff with retained lifetime
+checks. It does not introduce per-message kernel sender verification. The current
+transport rejects ancillary input, including credential messages. Enabling
+SO_PASSCRED/SCM_CREDENTIALS would require a separately scoped transport/schema
+change and proof; do not silently enable it, ignore rejection, or add a permissive
+fallback. If the intended threat model requires independent per-message sender
+verification, this design is insufficient and readiness must remain blocked
+until that requirement is implemented and validated.
+
+Untrusted same-user code capable of inspecting, controlling, or acquiring another
+process's descriptors is outside the minimal descriptor-confinement assumption.
+A privileged administrator can also replace code or manipulate processes. Record
+this boundary explicitly; matching UID, a hidden descriptor number, private
+message fields, or an unpredictable challenge is not isolation from those
+actors. No new service or privilege escalation is authorized by this design.
+
+#### Failure, cleanup, and required proofs
+
+The launch owner retains the child handle and resource references even if the
+caller loses an acknowledgement. Reconcile through that retained ownership and
+bounded read-only state checks. If no trustworthy child association is available,
+record unresolved launch/cleanup rather than searching names or signaling a
+possibly reused numeric PID. Do not automatically launch another child, replace
+the collection reference, or extend the deadline.
+
+Process cleanup is separately authorized and restricted to the verified owned
+child, preferably through its retained pidfd, followed by bounded exit/reaping
+verification and owned-descriptor closure. No broad process-name kill, unrelated
+process group, Docker-daemon action, or unverified descendant cleanup is allowed.
+A signal acknowledgement alone is not proof of exit. Keep cleanup uncertainty
+explicit; cleanup success cannot turn failed readiness into a successful run.
+Do not terminate the remaining armed watchdog while its container may still need
+deadline enforcement: first reconcile/remove the exact owned container under the
+existing fallback authorization and independently verify absence, or preserve
+the guard's deadline responsibility and escalate unresolved cleanup.
+
+| Future synthetic case | Required handling |
+| --- | --- |
+| Expected child receives only its endpoint and replies in time | Verify all lifetime and readiness gates; record only their limited meaning |
+| Launch fails or bootstrap is malformed/incomplete | No readiness; close owned endpoints and reconcile the child |
+| An unrelated descriptor or endpoint copy survives launch | Fail the tested confinement invariant; no readiness claim |
+| A stale reply or old armed event is replayed | Reject it; do not refresh health |
+| Child exits, PID is reused, or replacement is observed | Reject the lifetime association; never follow the replacement |
+| Inspection is interrupted or permission is denied | Treat evidence as unavailable and fail readiness |
+| Startup acknowledgement is lost or arrives after deadline | Reconcile original references; no retry launch or late start |
+| Close, signal, exit verification, or cleanup is uncertain | Record the unresolved outcome; no overall success |
+
+These are future acceptance requirements, not completed proofs. The existing
+workload-identity test concerns a container process, not this host-child launch
+path. The current local socket tests do not demonstrate descriptor confinement
+across launch. Watchdog integration, independent supervision, and their failure
+proofs remain open. No live collection is enabled; measurement age remains
+unknown and approval eligibility remains blocked.
+
+Primary references for the proposed launch/lifetime rules:
+
+- [Python 3.12 subprocess inheritance and launch behavior](https://docs.python.org/3.12/library/subprocess.html)
+- [Linux Unix socket credentials and descriptor passing](https://man7.org/linux/man-pages/man7/unix.7.html)
+- [Linux pidfd lifetime and reaping conditions](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
+- [Linux process start-time field](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)

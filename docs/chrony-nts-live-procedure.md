@@ -201,3 +201,9 @@ The [future watchdog health-supervision contract](nts-container-watchdog.md#futu
 defines independent progress checks, bounded failure handling, and cleanup
 coordination. It is design only; the existing watchdog does not implement that
 protocol, and live execution remains gated on its implementation and validation.
+
+The [restricted child-channel handoff contract](nts-container-watchdog.md#future-restricted-child-channel-handoff)
+separately defines proposed descriptor ownership, trusted launch, lifetime checks,
+and their origin-verification limits. It is design only and does not implement
+watchdog handoff or per-message sender verification. These prerequisites remain
+unimplemented gates for live orchestration.
