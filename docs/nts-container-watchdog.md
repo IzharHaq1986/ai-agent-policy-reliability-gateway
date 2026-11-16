@@ -464,3 +464,84 @@ Primary references for the proposed launch/lifetime rules:
 - [Linux Unix socket credentials and descriptor passing](https://man7.org/linux/man-pages/man7/unix.7.html)
 - [Linux pidfd lifetime and reaping conditions](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
 - [Linux process start-time field](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)
+
+### Synthetic direct-child handoff proof
+
+`tests/support/run_nts_child_handoff_acceptance.py --accept 5 2` runs two
+harmless fixed local fixtures with explicit five-second startup and two-second
+cleanup budgets per case. It requires Linux pidfd support and the validation
+Python environment. No sudo, Docker, network exchange, or clock change is needed.
+CI runs this opt-in command and strict-checks both new support files. Focused
+failure tests are in `tests/test_nts_child_handoff.py`.
+
+The first case passes only the designated socket endpoint across exec, using a
+fixed absolute interpreter and adjacent reviewed fixture, isolated Python mode,
+controlled environment/working directory, close_fds, and one pass_fds entry.
+Standard streams go to DEVNULL. A deliberately inheritable unrelated marker and
+the supervisor's endpoint must be absent in the child. The child restores its
+endpoint's close-on-exec flag and sends one bounded fixture report. The parent
+independently brackets that report with bounded kernel start-time/command reads,
+checks the endpoint inode and close-on-exec flag through kernel fdinfo, checks
+the boot boundary, and observes exit through a retained pidfd before reaping.
+It then confirms that closure is observable on the socket.
+
+The second case deliberately retains the parent's child-end copy. After the
+child exits, the pidfd still reports its exit while a nonblocking socket read
+reports would-block rather than closure. Only after closing that spare copy does
+closure become observable. The retained copy is an intentional negative fixture,
+not an allowed readiness configuration. These observations prove why socket
+closure cannot replace independent child-lifetime monitoring.
+
+The fixed fixture uses raw local sockets and the existing packet ceiling. It
+does not add endpoint adoption to the existing transport, and its inheritance
+report is separate from the health protocol. The fixture cannot
+execute supplied commands. The parent inspects only its retained direct child;
+it never follows a PID asserted in a packet. Explicit default SIGCHLD behavior,
+single Python-thread ownership, no competing/native reaper, reviewed unchanged
+fixture files, and a controlled host remain prerequisites. A pidfd wait must
+confirm the direct-child association before accepting evidence. This test does
+not establish isolation from privileged or same-user process interference.
+
+The startup deadline includes resource preparation, launch, local inspection,
+reporting, and exit observation. Readiness waits use only its remainder. Late
+startup fails; initial process creation and kernel scheduling are not guaranteed
+interruptible. The child also has a bounded lifetime. Separate cleanup targets
+only the retained owned child, using the pidfd when available. If pidfd setup
+failed, cleanup requires the still-unreaped direct-child association before
+using its launch handle. No name-based kill, replacement launch, or deadline
+reset is performed. Signal acknowledgement is followed by a bounded wait/reap;
+close errors or unverified cleanup prevent an overall PASS. If launch was
+attempted but no child handle was returned, child cleanup remains unverified;
+closing local descriptors cannot establish that no child was created. A failed cleanup
+attempt never authorizes repeated actions against a reused numeric reference.
+
+The harness emits bounded JSON observations containing actual local process
+references, followed by PASS only after both cases and cleanup pass. Preserve
+that receipt privately; do not commit its operational fields. The synthetic
+failure tests cover launch failure, unavailable pidfds or identity evidence,
+early exit, stall, late startup, unexpected descriptor inheritance, malformed
+reports, and missing cleanup confirmation. Useful observations do not convert a
+failed or uncertain run into a successful result.
+
+For independent troubleshooting:
+
+| Failure | Inspect and independently check | Correction boundary |
+| --- | --- | --- |
+| Unsafe ownership or unavailable pidfd | Verify a fresh single-owner validation process, Linux support, and signal/wait prerequisites | Restore the required environment; do not skip lifetime checks |
+| Child exits before its report | Inspect the fixed fixture's argument, descriptor, and deadline checks against the recorded launch | Correct the fixed launch path; do not accept an old report |
+| Identity or endpoint mismatch | Compare bounded kernel observations with the retained handle and reviewed fixture | Reconcile the failed attempt before another separately authorized run |
+| Missing or late report | Check original budget, actual exit witness, and excluded-descriptor handling | Fix the observed cause without extending the failed attempt |
+| Cleanup uncertainty | Reconcile the recorded owned child and descriptor state using trusted local evidence | Do not infer exit from a signal or blindly reuse a numeric PID |
+
+Comments explain each meaningful new code statement and multi-line component.
+The fixed child file handles descriptor validation/reporting; the harness owns
+launch, independent observations, and cleanup; focused tests reproduce failures
+without weakening the acceptance gate. These files and the command above allow
+review without AI. Diagnose the first observed divergence before modifying code.
+
+This proves only the selected synthetic launch path. It does not prove absence
+of every possible descriptor copy, executable attestation, per-message sender
+identity, or actual watchdog readiness. Watchdog bootstrap, transport handoff,
+health-loop integration, independent supervision, and live failure proofs remain
+open. Live NTS collection remains unstarted; measurement age remains unknown and
+approval eligibility remains blocked.
