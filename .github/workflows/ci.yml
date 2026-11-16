@@ -148,7 +148,9 @@ jobs:
             tests/support/nts_container_watchdog.py \
             tests/support/nts_evidence_bundle.py \
             tests/support/nts_evidence_publisher.py \
-            tests/support/nts_workload_identity.py
+            tests/support/nts_workload_identity.py \
+            tests/support/nts_health_protocol.py \
+            tests/support/nts_health_transport.py
 
       - name: Prepare isolated PostgreSQL image
         shell: bash
