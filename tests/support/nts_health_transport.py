@@ -1,8 +1,12 @@
 """Private Linux packet transport; no watchdog identity or execution authority."""
 
 import errno
+import os  # Duplicate borrowed descriptors without taking ownership of them.
+import select  # Inspect peer closure with a zero-time, nonblocking poll.
 import socket
+import stat  # Reject non-socket objects before wrapping an owned duplicate.
 import sys
+import threading  # Restrict adoption to a single-owner Python bootstrap context.
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -44,7 +48,7 @@ def _close(sockets: tuple[socket.socket, ...]) -> bool:
 
 
 class Endpoint:
-    """Own one endpoint returned by create_pair; no adoption or FD handoff API.
+    """Own one created or checked-adopted endpoint; no launch or FD handoff API.
 
     Use from one trusted owner only. The helper has no application queue and
     neither parses health messages nor polls for readiness.
@@ -117,6 +121,53 @@ class Endpoint:
         return packet
 
 
+def _configuration(buffer_bytes: int, effective_buffer_limit: int) -> None:
+    """Keep creation and adoption under the same explicit resource bounds."""
+    if not (
+        type(buffer_bytes) is int
+        and 2 * PACKET_BYTES <= buffer_bytes <= _MAX_BUFFER
+        and type(effective_buffer_limit) is int
+        and 2 * buffer_bytes <= effective_buffer_limit <= 2 * _MAX_BUFFER
+    ):
+        raise TransportError("INVALID_CONFIGURATION", cleanup_complete=True)
+
+
+def _platform() -> None:
+    """Reject unsupported transport semantics before acquiring owned descriptors."""
+    constants = (
+        "AF_UNIX",  # Require local IPC instead of a network transport.
+        "SOCK_SEQPACKET",  # Preserve complete ordered message boundaries.
+        "SOCK_NONBLOCK",  # Create without an implicit readiness wait.
+        "SOCK_CLOEXEC",  # Prevent unintended endpoint inheritance across exec.
+        "MSG_DONTWAIT",  # Keep each data operation nonblocking.
+        "MSG_NOSIGNAL",  # Turn peer closure into an error instead of SIGPIPE.
+        "MSG_CMSG_CLOEXEC",  # Protect any kernel-level received-FD handling.
+        "MSG_CTRUNC",  # Detect discarded unexpected ancillary input.
+        "MSG_TRUNC",  # Detect incomplete packet evidence.
+        "MSG_EOR",  # Recognize a supported end-of-record result flag.
+    )
+    # No fallback may substitute different descriptor or message semantics.
+    if sys.platform != "linux" or not all(hasattr(socket, name) for name in constants):
+        raise TransportError("UNSUPPORTED_PLATFORM", cleanup_complete=True)
+
+
+def _read_buffers(
+    endpoint: socket.socket, buffer_bytes: int, effective_buffer_limit: int
+) -> BufferObservation:
+    """Read existing limits without changing shared socket configuration."""
+    # Linux readback can be kernel-adjusted; these reads do not resize queues.
+    send = endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+    receive = endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    # Both readbacks must fit the same accepted interval used during creation.
+    if not all(
+        buffer_bytes <= size <= effective_buffer_limit for size in (send, receive)
+    ):
+        raise ValueError(
+            "buffer bounds"
+        )  # Callers convert this fixed rejection appropriately.
+    return BufferObservation(send, receive)  # This is not an exact message-count bound.
+
+
 def create_pair(
     *, buffer_bytes: int, effective_buffer_limit: int
 ) -> tuple[Endpoint, Endpoint]:
@@ -125,27 +176,10 @@ def create_pair(
     Buffer requests and accepted kernel-adjusted ceilings are explicit. Both
     send queues are bounded; Unix SO_RCVBUF readback is not receive-flow control.
     """
-    if not (
-        type(buffer_bytes) is int
-        and 2 * PACKET_BYTES <= buffer_bytes <= _MAX_BUFFER
-        and type(effective_buffer_limit) is int
-        and 2 * buffer_bytes <= effective_buffer_limit <= 2 * _MAX_BUFFER
-    ):
-        raise TransportError("INVALID_CONFIGURATION", cleanup_complete=True)
-    constants = (
-        "AF_UNIX",
-        "SOCK_SEQPACKET",
-        "SOCK_NONBLOCK",
-        "SOCK_CLOEXEC",
-        "MSG_DONTWAIT",
-        "MSG_NOSIGNAL",
-        "MSG_CMSG_CLOEXEC",
-        "MSG_CTRUNC",
-        "MSG_TRUNC",
-        "MSG_EOR",
-    )
-    if sys.platform != "linux" or not all(hasattr(socket, name) for name in constants):
-        raise TransportError("UNSUPPORTED_PLATFORM", cleanup_complete=True)
+    _configuration(
+        buffer_bytes, effective_buffer_limit
+    )  # Reuse explicit resource bounds.
+    _platform()  # Preserve the existing Linux-only semantics.
     owned: tuple[socket.socket, ...] = ()
     try:
         owned = socket.socketpair(
@@ -166,15 +200,150 @@ def create_pair(
                 raise ValueError
             for option in (socket.SO_SNDBUF, socket.SO_RCVBUF):
                 endpoint.setsockopt(socket.SOL_SOCKET, option, buffer_bytes)
-            send = endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
-            receive = endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
-            if not all(
-                buffer_bytes <= size <= effective_buffer_limit
-                for size in (send, receive)
-            ):
-                raise ValueError
-            observations.append(BufferObservation(send, receive))
+            # Share readback validation without changing existing creation behavior.
+            observations.append(
+                _read_buffers(endpoint, buffer_bytes, effective_buffer_limit)
+            )
         return Endpoint(owned[0], observations[0]), Endpoint(owned[1], observations[1])
     except (OSError, ValueError, AttributeError):
         complete = _close(owned)
         raise TransportError("SETUP_FAILED", cleanup_complete=complete) from None
+
+
+def adopt_inherited(
+    borrowed_fd: int,
+    *,
+    expected_device: int,
+    expected_inode: int,
+    buffer_bytes: int,
+    effective_buffer_limit: int,
+) -> Endpoint:
+    """Validate an owned duplicate of a trusted bootstrap's borrowed endpoint.
+
+    Expected identity must come from trusted launch code, never message claims.
+    Success leaves the borrowed original open. Its owner must close that spare
+    copy before further handoff or readiness; this helper never closes it.
+    """
+    _configuration(buffer_bytes, effective_buffer_limit)  # Reject invalid bounds first.
+    _platform()  # Do not fall back to weaker platform or socket semantics.
+    # Standard streams and malformed identity values cannot be bootstrap inputs.
+    if not (
+        type(borrowed_fd) is int
+        and 2 < borrowed_fd <= (1 << 31) - 1
+        and type(expected_device) is int
+        and 0 <= expected_device < (1 << 64)
+        and type(expected_inode) is int
+        and 0 < expected_inode < (1 << 64)
+    ):
+        raise TransportError("INVALID_INHERITED_REFERENCE", cleanup_complete=True)
+    if (
+        threading.active_count() != 1
+    ):  # Concurrent close/reuse is outside this operation.
+        raise TransportError("UNSAFE_BOOTSTRAP_CONTEXT", cleanup_complete=True)
+    raw_owned: int | None = (
+        None  # Track ownership before a Python socket object exists.
+    )
+    managed: socket.socket | None = None  # Never wrap the caller's original descriptor.
+    transferred = False  # Only a fully validated result may retain our owned duplicate.
+    try:  # Any failure, including interrupted validation, releases acquired copies.
+        raw_owned = os.dup(
+            borrowed_fd
+        )  # A duplicate gives us independent close ownership.
+        os.set_inheritable(
+            raw_owned, False
+        )  # Change only the duplicate's per-FD exec flag.
+        if os.get_inheritable(
+            raw_owned
+        ):  # Verify the flag instead of assuming success.
+            raise ValueError(
+                "inheritance flag"
+            )  # Never return an inheritable owned copy.
+        observed = os.fstat(
+            raw_owned
+        )  # Compare kernel identity, not descriptor-number equality.
+        if (
+            not stat.S_ISSOCK(observed.st_mode)
+            or observed.st_dev != expected_device
+            or observed.st_ino != expected_inode
+        ):
+            raise ValueError(
+                "identity mismatch"
+            )  # A wrong source is rejected, never closed.
+        if os.get_blocking(
+            raw_owned
+        ):  # Read the actual shared kernel mode before wrapping.
+            raise ValueError("blocking source")  # Never fix a blocking borrowed source.
+        managed = socket.socket(
+            fileno=raw_owned
+        )  # Adopt only the duplicate that we own.
+        raw_owned = None  # The socket object is now the sole owner of that duplicate.
+        if (
+            managed.family != socket.AF_UNIX
+            or managed.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+            != socket.SOCK_SEQPACKET
+            or managed.getsockname() not in ("", b"")
+            or managed.getpeername() not in ("", b"")
+        ):
+            raise ValueError(
+                "socket profile"
+            )  # Require a connected unnamed local packet socket.
+        buffers = _read_buffers(
+            managed, buffer_bytes, effective_buffer_limit
+        )  # No resizing.
+        poller = (
+            select.poll()
+        )  # Inspect current failure flags without waiting for readiness.
+        failure_flags = (
+            select.POLLHUP | select.POLLERR | select.POLLNVAL | select.POLLRDHUP
+        )
+        poller.register(
+            managed, failure_flags
+        )  # Do not consume or peek at queued messages.
+        if poller.poll(
+            0
+        ):  # Zero timeout makes this an instantaneous closure/error observation.
+            raise ValueError(
+                "closed peer"
+            )  # A historical peer address is not current viability.
+        # Normalize wrapper timeout state only after the kernel mode passed.
+        managed.setblocking(False)  # The shared kernel mode is already nonblocking.
+        if os.get_blocking(managed.fileno()) or managed.get_inheritable():
+            raise ValueError(
+                "owned descriptor flags"
+            )  # Verify the result before transfer.
+        result = Endpoint(
+            managed, buffers
+        )  # Reuse existing bounded send/receive behavior.
+        transferred = True  # The returned endpoint now owns this validated duplicate.
+        return result  # This validates an endpoint, not a process or message sender.
+    except (
+        ValueError,
+        AttributeError,
+    ):  # Bad observations never become an accepted endpoint.
+        raise TransportError("ADOPTION_REJECTED", cleanup_complete=True) from None
+    except OSError:  # Missing, denied, or invalidated kernel evidence blocks adoption.
+        raise TransportError("ADOPTION_UNAVAILABLE", cleanup_complete=True) from None
+    finally:  # Never close the borrowed descriptor, even after failed validation.
+        if not transferred:  # Only acquired owned copies belong to failure cleanup.
+            complete = (
+                True  # Preserve uncertain close outcomes instead of retrying them.
+            )
+            if (
+                managed is not None
+            ):  # The socket object owns the duplicate after wrapping.
+                complete = _close(
+                    (managed,)
+                )  # Reuse existing one-attempt socket cleanup.
+            elif (
+                raw_owned is not None
+            ):  # Wrapping failed or identity validation rejected early.
+                try:  # Release only the duplicate created by this operation.
+                    os.close(raw_owned)  # Never close the supplied borrowed FD number.
+                except (
+                    OSError
+                ):  # The close may have occurred despite an error response.
+                    complete = False  # Do not retry an uncertain descriptor number.
+            if (
+                not complete
+            ):  # Cleanup uncertainty overrides any earlier rejection reason.
+                raise TransportError("ADOPTION_CLEANUP_FAILED", cleanup_complete=False)
