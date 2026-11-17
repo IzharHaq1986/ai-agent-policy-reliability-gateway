@@ -3,6 +3,7 @@
 import json  # Parse bounded fixture reports and emit small private proof records.
 import math  # Reject non-finite timing budgets before creating resources.
 import os  # Retain pidfds and inspect only the owned direct child.
+import secrets  # Generate an unpredictable token for this synthetic exchange.
 import select  # Observe socket readiness and child exit without busy waiting.
 import signal  # Signal only the retained owned child during bounded cleanup.
 import stat  # Compare kernel socket type and device identity in the retained child.
@@ -10,7 +11,9 @@ import subprocess  # Launch only the adjacent reviewed harmless fixture.
 import sys  # Select this validation interpreter and the explicit opt-in CLI.
 import threading  # Reject competing Python-thread ownership in this isolated proof.
 import time  # Keep one original monotonic startup budget and separate cleanup budget.
+import uuid  # Give each synthetic launch a distinct collection identity.
 from pathlib import Path  # Resolve fixed reviewed files without PATH search.
+from typing import Literal, NoReturn  # Restrict internal diagnostic labels statically.
 
 from nts_command_capture import QUERY_BYTES  # Reuse the existing bounded-read ceiling.
 
@@ -23,6 +26,9 @@ from nts_container_watchdog import (
 # Keep synthetic packets within existing limits.
 from nts_health_protocol import (
     PACKET_BYTES,
+    HealthError,  # Reject protocol failures without granting execution authority.
+    Lifetime,  # Bind expected values to trusted launch observations.
+    Session,  # Reuse the existing single-outstanding-challenge validator.
 )
 
 # Use existing bounded transport without changing its API.
@@ -34,6 +40,7 @@ from nts_health_transport import (
     create_pair,  # Configure both ends under explicit accepted buffer bounds.
 )
 
+_HEALTH_TIMEOUT_NS = 1_000_000_000  # One-second synthetic limit, not a clock threshold.
 _BUFFER_BYTES = 8192  # Explicit synthetic transport setting, not a production default.
 _BUFFER_CEILING = 16384  # Accept the expected Linux-adjusted test buffer readback.
 
@@ -51,6 +58,29 @@ class HandoffError(RuntimeError):
         super().__init__(reason)
         # An action error is not proof of cleanup.
         self.cleanup_complete = cleanup_complete
+        # Only identity rejection sites attach a fixed non-sensitive checkpoint.
+        self.identity_checkpoint: str | None = None
+
+
+def _identity_mismatch(
+    checkpoint: Literal[  # Trusted code selects labels, never packet or process values.
+        "COMMAND_SNAPSHOT",  # Bounded command observation rejected.
+        "REPORT_START_REFERENCE",  # Start references around the report disagree.
+        "REPORT_FIELDS",  # Captured report values or types disagree.
+        "REPORT_BOOT",  # Boot identity at the report gate changed.
+        "REPORT_CHILD_EXIT",  # Independent report-stage exit observation.
+        "HEALTH_START_REFERENCE",  # Post-reply start reference changed.
+        "HEALTH_BOOT",  # Post-reply boot identity changed.
+        "HEALTH_CHILD_EXIT",  # Independent post-reply exit observation.
+    ],
+) -> NoReturn:
+    """Label an existing rejection without retrying or granting authority."""
+    error = HandoffError(
+        "IDENTITY_MISMATCH"
+    )  # Preserve the existing high-level reason.
+    error.identity_checkpoint = checkpoint  # Keep raw local references out of errors.
+    error.add_note("IDENTITY_CHECKPOINT=" + checkpoint)  # Visible in pytest failures.
+    raise error  # The existing caller still owns cleanup and independent exit checks.
 
 
 def _boot() -> str:
@@ -117,8 +147,8 @@ def _preflight(startup_seconds: float, cleanup_seconds: float) -> None:
         raise HandoffError("UNSAFE_CHILD_OWNERSHIP")
 
 
-def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
-    """Read a bounded local lifetime witness, never a child-asserted identity."""
+def _start_reference(pid: int) -> int:
+    """Read the owned process start reference without assuming command publication."""
     root = Path("/proc") / str(pid)  # PID comes only from our retained Popen handle.
     # Read kernel lifetime data independently.
     with (root / "stat").open("rb") as source:
@@ -137,6 +167,13 @@ def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
         b"x",
     }:
         raise HandoffError("CHILD_EXITED")  # An existing PID alone is not sufficient.
+    return ticks  # This witness alone cannot validate the command or grant authority.
+
+
+def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
+    """Require a live process witness and an exact bounded command snapshot."""
+    ticks = _start_reference(pid)  # Reuse the same independent bounded lifetime check.
+    root = Path("/proc") / str(pid)  # Only the retained child owner supplies this PID.
     # Verify the fixed profile at this observation.
     with (root / "cmdline").open("rb") as source:
         # Bound inspection even for unexpected processes.
@@ -145,8 +182,8 @@ def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
     expected = b"\0".join(os.fsencode(arg) for arg in expected_command) + b"\0"
     if len(command) > QUERY_BYTES or command != expected:
         # Matching start ticks do not attest code.
-        raise HandoffError("IDENTITY_MISMATCH")
-    return ticks  # The caller brackets the fixture report with this local witness.
+        _identity_mismatch("COMMAND_SNAPSHOT")  # Label this single bounded observation.
+    return ticks  # This full profile must match the earlier independent start witness.
 
 
 def _endpoint_witness(
@@ -334,6 +371,42 @@ def _report(endpoint: Endpoint, pidfd: int, deadline: float) -> dict[str, object
         return report  # The parent still independently compares identity assertions.
 
 
+def _health_exchange(
+    endpoint: Endpoint, pidfd: int, lifetime: Lifetime, deadline: float
+) -> None:
+    """Accept exactly one timely synthetic reply; this is not watchdog readiness."""
+    session = Session(  # Keep expected identity independent of the received packet.
+        lifetime,  # Parent-owned launch evidence defines the only accepted lifetime.
+        response_timeout_ns=_HEALTH_TIMEOUT_NS,  # Explicit synthetic response budget.
+        max_generation_age_ns=_HEALTH_TIMEOUT_NS,  # Not an NTP measurement-age bound.
+        token_factory=lambda: secrets.token_hex(32),  # Fresh 256-bit parent challenge.
+    )
+    sent = time.monotonic_ns()  # Start response timing before the single send attempt.
+    packet = session.challenge(sent)  # Only this outstanding challenge may be answered.
+    endpoint.send(packet)  # Backpressure fails this attempt; never resend or rearm.
+    response_deadline = min(  # Health waiting cannot extend the original lifetime.
+        deadline, (sent + _HEALTH_TIMEOUT_NS) / 1_000_000_000
+    )
+    while True:  # Every empty receive returns to a bounded readiness wait.
+        session.check(time.monotonic_ns())  # Reject expired or backwards timing first.
+        try:  # Distinguish the health budget from the initial report wait.
+            _wait(pidfd, endpoint, response_deadline)  # Observe exit and socket input.
+        except HandoffError as error:  # Preserve non-time failures unchanged.
+            if str(error) == "STARTUP_EXPIRED":  # This narrower wait expired.
+                raise HandoffError("HEALTH_RESPONSE_EXPIRED") from None
+            raise  # Do not reinterpret other evidence failures.
+        if _child_exited(pidfd):  # A queued reply cannot revive an exited worker.
+            raise HandoffError("HEALTH_CHILD_EXITED")
+        try:  # Readiness does not guarantee a subsequent nonblocking read succeeds.
+            response = endpoint.receive()  # Enforce whole-packet and ancillary limits.
+        except WouldBlock:  # Preserve the same challenge and deadline on a read race.
+            continue  # Wait again; never busy-poll or regenerate a challenge token.
+        session.accept(
+            response, time.monotonic_ns()
+        )  # Validate before reporting success.
+        return  # A second response is never accepted as a new exchange.
+
+
 def _cleanup(
     process: subprocess.Popen[bytes], pidfd: int | None, seconds: float
 ) -> bool:
@@ -403,11 +476,21 @@ def run_case(
             "stall",
             "source_close_failure",
             "retain_original",
+            "health_close",  # A closed peer cannot establish a successful exchange.
+            "health_lifetime",  # A reply with another lifetime cannot pass.
+            "health_generation",  # A future generation timestamp must fail.
+            "health_malformed",  # Private end-to-end protocol rejection fixture.
+            "health_mismatch",  # A different challenge token must fail.
+            "health_silent",  # Missing replies must exhaust only the existing bound.
+            "health_duplicate",  # Extra replies must not survive as accepted evidence.
         }
     ):
         # No arbitrary child entrypoint or command is accepted.
         raise HandoffError("INVALID_CASE")
     deadline = time.monotonic() + startup_seconds  # Keep one original startup deadline.
+    collection_id = str(
+        uuid.uuid4()
+    )  # Separate this attempt from all earlier launches.
     initial_boot = _boot()  # Bind local observations to the same host boot.
     # Track each resource as soon as ownership is acquired.
     parent: Endpoint | None = None
@@ -457,6 +540,8 @@ def run_case(
             str(PACKET_BYTES),  # Check the fixture's bound against the shared ceiling.
             # The fixed fixture context is not a general bootstrap-message API.
             *_adoption_context(child_identity),
+            initial_boot,  # Fixed trusted context, not a child-selected lifetime.
+            collection_id,  # Bind this launch to a fresh synthetic collection.
         )
         _before(deadline)  # Time spent preparing resources counts against startup.
         # Launch only this reviewed harmless child.
@@ -504,10 +589,15 @@ def run_case(
             child = None  # Do not close or reuse the released descriptor number again.
         # A blocking launch or late pidfd acquisition cannot pass startup.
         _before(deadline)
-        # Observe identity independently before the report.
-        before = _inspect(process.pid, command)
-        # Wait for bounded inheritance evidence.
+        # Capture lifetime before the report without assuming command publication.
+        before = _start_reference(process.pid)  # PID comes from the retained child.
+        # This bounded packet indicates progress, never trusted identity or authority.
         report = _report(parent, pidfd, deadline)
+        _before(deadline)  # Receiving a report cannot extend the original allowance.
+        # First full command check after report.
+        if _inspect(process.pid, command) != before:
+            # Preserve the pre-report witness.
+            _identity_mismatch("REPORT_START_REFERENCE")
         owned_fd = report[
             "owned_fd"
         ]  # Treat this as untrusted input, not identity proof.
@@ -525,7 +615,7 @@ def run_case(
         _original_absent(
             process.pid, child_fd
         )  # Adoption itself left this source copy open.
-        # Bracket the report with a second local witness.
+        # Bracket endpoint observations with a second full post-report command check.
         after = _inspect(process.pid, command)
         expected = {
             # Require the checked-copy fixture report, not the old raw format.
@@ -537,20 +627,51 @@ def run_case(
             # This assertion alone did not satisfy the kernel gate.
             "original_closed": True,
         }
-        # Matching values must also have exact expected types.
-        if (
-            before != after
-            or any(
-                type(report[key]) is not type(value) or report[key] != value
-                for key, value in expected.items()
-            )
-            or _boot() != initial_boot
-            or _child_exited(pidfd)
+        # Require the initial lifetime and both later profile witnesses to agree.
+        if before != after:  # Start references must match before report comparisons.
+            _identity_mismatch("REPORT_START_REFERENCE")  # No new observation or retry.
+        if any(  # Matching report values must also have the exact expected types.
+            type(report[key]) is not type(value) or report[key] != value
+            for key, value in expected.items()
         ):
-            # Neither report fields nor PID alone suffice.
-            raise HandoffError("IDENTITY_MISMATCH")
+            _identity_mismatch("REPORT_FIELDS")  # Never include actual field values.
+        if _boot() != initial_boot:  # Retain the same independent boot query and order.
+            _identity_mismatch("REPORT_BOOT")  # A changed boundary still stops startup.
+        if _child_exited(pidfd):  # Preserve the existing retained-generation exit gate.
+            _identity_mismatch("REPORT_CHILD_EXIT")  # A report cannot revive the child.
         # All observations must remain inside the original startup allowance.
         _before(deadline)
+        lifetime = Lifetime(  # These container-shaped IDs are synthetic placeholders.
+            boot_id=initial_boot,  # Independently bracketed local boot identity.
+            collection_id=collection_id,  # Created by the parent before launch.
+            container_id="0" * 64,  # No real container is represented by this fixture.
+            owner="0" * 32,  # No Docker ownership claim is made by this placeholder.
+            watchdog_pid=process.pid,  # Retained direct-child handle, not report input.
+            watchdog_start_ticks=before,  # Independently inspected kernel lifetime.
+            deadline_ns=int(deadline * 1_000_000_000),  # Original monotonic boundary.
+        )
+        _health_exchange(
+            parent, pidfd, lifetime, deadline
+        )  # One bounded exchange only.
+        # Keep the existing post-reply checks in their original short-circuit order.
+        if (
+            _inspect(process.pid, command) != before
+        ):  # A reply cannot override identity.
+            _identity_mismatch(
+                "HEALTH_START_REFERENCE"
+            )  # No continuity claim is added.
+        if (
+            _boot() != initial_boot
+        ):  # Perform only the existing bounded boot observation.
+            _identity_mismatch(
+                "HEALTH_BOOT"
+            )  # Do not refresh or replace the reference.
+        if _child_exited(
+            pidfd
+        ):  # Exit is still independently checked before dispatching exit.
+            _identity_mismatch(
+                "HEALTH_CHILD_EXIT"
+            )  # A reply supplies no execution authority.
         parent.send(
             b"exit"
         )  # Reuse all-or-error bounded send; no partial-send fallback.
@@ -590,6 +711,7 @@ def run_case(
             "endpoint_cloexec_independently_observed": True,
             # Both communication paths used bounded transport.
             "checked_adoption_used": True,
+            "synthetic_health_exchange_accepted": True,  # No actual watchdog readiness.
             # A separate kernel point observation.
             "child_original_absence_observed": True,
             # This locator was validated against expected identity.  # Kernel fdinfo
@@ -602,6 +724,8 @@ def run_case(
             "measurement_age": "unknown",
             "approval_eligibility": "blocked",
         }
+    except HealthError:  # Protocol errors stop the attempt and retain normal cleanup.
+        raise HandoffError("HEALTH_EXCHANGE_REJECTED") from None
     except TransportError as error:  # Keep owned-copy cleanup uncertainty explicit.
         raise HandoffError(
             "TRANSPORT_FAILED", cleanup_complete=error.cleanup_complete
@@ -708,6 +832,14 @@ if __name__ == "__main__":  # Importing the harness never launches a child.
         main()  # The explicit opt-in path is the only command entrypoint.
     # Preserve cleanup uncertainty without printing a traceback.
     except HandoffError as error:
-        _emit({"failure": str(error), "cleanup_complete": error.cleanup_complete})
+        failure_record: dict[str, object] = {  # Keep existing failure fields unchanged.
+            "failure": str(error),  # Preserve the existing high-level reason.
+            "cleanup_complete": error.cleanup_complete,  # Never hide uncertainty.
+        }
+        # Only identity failures gain a label.
+        if error.identity_checkpoint is not None:
+            failure_record["identity_checkpoint"] = error.identity_checkpoint
+        # Emit fixed diagnostics, never raw identity observations.
+        _emit(failure_record)
         # A failed proof must fail the calling acceptance gate.
         raise SystemExit(1) from None

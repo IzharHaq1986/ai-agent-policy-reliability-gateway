@@ -654,3 +654,179 @@ measurement age remains unknown, and approval eligibility remains blocked.
 The [Python descriptor documentation](https://docs.python.org/3.12/library/os.html#os.dup)
 and [socket mode documentation](https://docs.python.org/3.12/library/socket.html#notes-on-socket-timeouts)
 define the duplication and shared-mode semantics used here.
+
+### One synthetic child health exchange
+
+The fixed child proof now exercises the existing `Session` / `respond` protocol
+through the checked private transport after the parent validates the adoption
+report and kernel witnesses. This is a synthetic communication check, not actual
+watchdog health supervision. The report remains a separate version-2 fixture
+message; it cannot itself satisfy a health challenge.
+
+Before launch the parent creates a fresh collection UUID and captures the boot
+identity. Those two fixed context fields follow the existing adoption arguments
+in the reviewed child's argv. The parent constructs the expected protocol lifetime
+from its retained child PID, independently inspected start ticks, and original
+monotonic deadline. The child constructs its matching lifetime from fixed launch
+context and its own process references, not from the challenge's claimed identity.
+All-zero container and owner references are explicit synthetic placeholders;
+there is no container or real watchdog represented by this exchange. This is not
+a general bootstrap-delivery API. No challenge token is supplied through argv or
+written to the proof receipt.
+
+The parent issues exactly one unpredictable 256-bit challenge. The explicit
+synthetic response and generation-age limits are both one second. These test
+settings are not production defaults or NTP freshness thresholds. The receive
+wait ends at the earlier of the response deadline and the original startup
+deadline. An empty receive returns to bounded readiness waiting; a blocked send
+fails without resend, another token, another child, or an extended budget.
+Protocol rejection and observed peer loss also fail the attempt and enter the
+existing bounded owned-child cleanup path.
+
+The child answers only one challenge and then accepts only the fixed exit
+instruction. The parent accepts a response only for its outstanding token,
+sequence, expected lifetime, and protocol timing bounds. It rechecks point
+process and boot identity before requesting exit. Extra queued replies invalidate
+the existing after-exit closure proof; they cannot silently become evidence for a
+second exchange. Both the normal handoff and retained-parent-copy cases still
+require independently observed child exit, original-descriptor absence, closure
+behavior, and confirmed resource cleanup. The successful receipt adds
+`synthetic_health_exchange_accepted: true`, while retaining unknown measurement
+age and blocked approval eligibility.
+
+Run the existing opt-in proof and focused tests from the reviewed checkout:
+
+```bash
+python tests/support/run_nts_child_handoff_acceptance.py --accept 5 2
+python -m pytest -q tests/test_nts_child_handoff.py
+```
+
+Inspect the parent `_health_exchange` function for challenge ownership and the
+unchanged-budget wait. Inspect the fixed child's one-challenge branch for reply
+construction and exit restrictions. Focused real-child tests inject malformed,
+wrong-token, wrong-lifetime, future-generation, missing, duplicate, and closed-peer
+responses. Parent-side tests exercise late acceptance, replay rejection, send
+backpressure, and a temporary receive race. They retain actual child handles and
+independently verify reaping; rejection is not itself proof of resource cleanup.
+
+For `HEALTH_EXCHANGE_REJECTED`, compare protocol fields against parent-owned
+context and inspect `Session.accept`; do not repair or accept the rejected reply.
+For `HEALTH_RESPONSE_EXPIRED`, inspect elapsed time and scheduling against the
+original bounds; do not reset the deadline. For transport or peer-exit failures,
+inspect the endpoint operation and retained pidfd evidence. For unexpected packets
+after exit, inspect whether the child emitted more than one response. Correct the
+first observed divergence without weakening the identity, packet, deadline, or
+cleanup checks. No fault permits a replacement child within the failed attempt.
+
+A timely synthetic reply is neither per-message sender authentication nor proof
+of future cleanup capability, continuous process integrity, authenticated NTS,
+measurement freshness, or acceptable clock uncertainty. Real watchdog integration,
+independent supervision, source-trust evidence, and live NTS collection remain
+open. Measurement age remains unknown and approval eligibility remains blocked.
+
+### Identity rejection checkpoints
+
+An `IDENTITY_MISMATCH` still stops the synthetic attempt. Its exception now carries
+one fixed checkpoint label in `identity_checkpoint` and an
+`IDENTITY_CHECKPOINT=...` exception note. Pytest displays the note when showing the
+exception or a failed expected-error comparison. The opt-in CLI adds
+`identity_checkpoint` to an identity-failure record; other error records retain
+their existing fields. No raw command arguments, process references, boot IDs,
+report values, or environment contents are added to these diagnostics.
+
+| Checkpoint | Existing rejection site to inspect |
+| --- | --- |
+| `COMMAND_SNAPSHOT` | The bounded kernel command bytes disagree with the expected fixed argv or exceed the read limit |
+| `REPORT_START_REFERENCE` | The independent process-start observations around the fixture report disagree |
+| `REPORT_FIELDS` | A required report value or its exact type disagrees with the expected context |
+| `REPORT_BOOT` | The boot observation at the report gate differs from the initial reference |
+| `REPORT_CHILD_EXIT` | The retained child is observed exited at the report gate |
+| `HEALTH_START_REFERENCE` | The post-reply process-start observation differs from the initial reference |
+| `HEALTH_BOOT` | The post-reply boot observation differs from the initial reference |
+| `HEALTH_CHILD_EXIT` | The retained child is observed exited after the reply |
+
+Checkpoint labeling itself adds no identity retry, query, wait allowance,
+permissive comparison, replacement launch, or recovery action. The startup
+observation ordering below defines when the current lifetime and command checks
+run. Existing high-level failure reasons, packet checks, deadlines, and
+independent cleanup requirements remain in place.
+Unavailable observations and other non-identity errors keep their existing
+handling. Unverified cleanup still overrides an otherwise useful result.
+
+For independent verification, run `tests/test_nts_child_handoff.py`. The real-child
+fault tests cover all eight labels, preserve the high-level error reason, inspect
+the fixed exception note, and independently check child reaping. The additional
+checkpoint cases also verify one launch and descriptor-count restoration. They
+mark report and reply boundaries rather than depending on scheduling delays.
+
+A checkpoint identifies where rejection occurred, not why the observation
+changed or whether it was a race, unavailable evidence, interference, or a
+fixture defect. Preserve the original failing receipt and source identity. Use
+the label to inspect the corresponding observation and its caller before making
+a correction. Do not broaden accepted errors or retry into acceptance. A later
+passing run alone does not establish that an unexplained earlier failure was
+fixed. Live NTS collection remains unstarted; measurement age remains unknown
+and approval eligibility remains blocked.
+
+### Startup observation ordering
+
+The synthetic harness must not infer publication of `/proc/PID/cmdline` merely
+from acquisition of a `Popen` handle. Upstream Linux v6.8's
+[`get_mm_cmdline`](https://github.com/torvalds/linux/blob/v6.8/fs/proc/base.c)
+can return zero while startup has not yet initialized the environment bounds.
+The [`begin_new_exec`](https://github.com/torvalds/linux/blob/v6.8/fs/exec.c)
+path closes close-on-exec descriptors before the ELF loader subsequently
+initializes argument/environment bounds in
+[`create_elf_tables`](https://github.com/torvalds/linux/blob/v6.8/fs/binfmt_elf.c).
+This supports a startup-publication timing explanation; it does not attest the
+precise execution path of a distribution-patched kernel. The correction does
+not infer trust from an empty result or from a later diagnostic reread.
+
+The fixed synthetic sequence now works as follows:
+
+1. Retain the direct child and pidfd, then read a bounded independent process-start
+   reference before the report. Reject inaccessible, invalid, or dead-process
+   evidence. `_start_reference` does not read or validate the command profile.
+2. Receive the existing bounded fixture report under the unchanged original
+   deadline. This is only a bootstrap-progress indication. Its PID, start ticks,
+   descriptor locator, and release assertions remain untrusted.
+3. Recheck the original deadline and perform the first full `_inspect`: read the
+   independent start reference and compare the entire bounded command snapshot
+   exactly against the parent's fixed launch argv. Require agreement with the
+   pre-report start reference before examining the reported endpoint locator.
+4. Perform the existing endpoint and original-descriptor-absence checks. Perform
+   the second full `_inspect` after those observations and require the same
+   pre-report reference. Preserve all report-field, boot, and exit checks.
+5. Only then begin the existing synthetic health exchange. Keep the existing
+   third full command/lifetime inspection, boot check, and exit check after the
+   reply, before sending the fixed exit instruction.
+
+Both full command checks before the challenge remain mandatory; they now bracket
+endpoint observations after the report. The independent start witness still
+brackets report receipt. Each full profile check reuses the same bounded stat
+parser through `_start_reference`. The additional stat observation consumes the
+original startup budget; it creates no new time allowance. No expected identity
+is taken from a report, and no profile comparison is replaced by a child claim.
+
+An empty, oversized, or different command snapshot at any of the three full
+checks still fails immediately as `COMMAND_SNAPSHOT`. There is no retry, sleep,
+replacement child, or loop waiting for a matching identity. Later diagnostic
+observations never turn rejection into acceptance. Missing or invalid reports,
+changed start references, unavailable evidence, and unconfirmed cleanup remain
+blocking failures. This remains a point-observation proof under the existing
+reviewed-code and controlled-host assumptions, not continuous process integrity.
+
+For independent verification, inspect `run_case`, `_start_reference`, and
+`_inspect` in the harness. Focused tests supply an empty command result if queried
+before the real report; successful cases prove that no such query occurs and
+that all three strict command checks remain. They record the start/report/profile/
+endpoint/health order without sleeps. Separate cases inject empty, oversized, and
+different command results into each full check, require no reread or relaunch,
+and independently verify reaping and descriptor restoration. Additional tests
+retain the pre-report lifetime binding and block progression without a valid
+report. To repair a failure, inspect its recorded checkpoint and first divergent
+observation; do not loosen the comparison or extend the deadline.
+
+The child fixture, transport, protocol, real watchdog, HTTP boundary, and approval
+paths are unchanged by this ordering correction. Live NTS collection remains
+unstarted, measurement age unknown, and approval eligibility blocked.

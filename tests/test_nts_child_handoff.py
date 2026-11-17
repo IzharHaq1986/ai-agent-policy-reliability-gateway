@@ -64,6 +64,7 @@ def test_real_handoff_and_independent_exit(module, launches, duplicate):
     )  # Keep the checked locator's exact type.
     # Compare the two actual socket cases.
     assert result["closure_hidden_by_duplicate"] is duplicate
+    assert result["synthetic_health_exchange_accepted"] is True  # Real bounded reply.
     # This proof is not time freshness evidence.
     assert result["measurement_age"] == "unknown"
     # No synthetic observation grants authority.
@@ -176,23 +177,30 @@ def test_launch_failure_releases_descriptors(module, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["early_exit", "stall"])
-def test_child_exit_or_stall_cannot_pass(module, launches, mode):
+def test_child_exit_or_stall_cannot_pass(module, launches, monkeypatch, mode):
+    exchanges = []  # Missing progress evidence must prevent a health challenge.
+    # Record any forbidden advancement without supplying an alternate child response.
+    monkeypatch.setattr(
+        module, "_health_exchange", lambda *args: exchanges.append(True)
+    )
     # Neither missing nor late evidence is accepted.
     with pytest.raises(module.HandoffError):
         module.run_case(
             duplicate=False, startup_seconds=0.2, cleanup_seconds=2, _mode=mode
         )
+    assert not exchanges  # No report means no health exchange or execution authority.
     # A failed observation must still stop and reap the exact child.
     assert_reaped(launches)
 
 
-def test_unavailable_identity_cleans_child(module, launches, monkeypatch):
+@pytest.mark.parametrize("observer", ["_start_reference", "_inspect"])
+def test_unavailable_identity_cleans_child(module, launches, monkeypatch, observer):
     def denied(*args):  # Simulate inaccessible trusted local evidence.
         # No fallback to child assertions is allowed.
         raise PermissionError("private proc detail")
 
     # Fail the independent identity observation.
-    monkeypatch.setattr(module, "_inspect", denied)
+    monkeypatch.setattr(module, observer, denied)
     with pytest.raises(module.HandoffError, match="HANDOFF_UNAVAILABLE"):
         module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
     # Retained ownership still permits bounded exact-child cleanup.
@@ -308,10 +316,21 @@ def test_mismatched_report_never_passes(module, launches, monkeypatch, field, va
         report[field] = value  # Change exactly the condition under test.
         return report  # Trusted local observations must reject the altered assertion.
 
+    # An invalid report must not progress to a health challenge.
+    exchanges = []  # Record forbidden advancement without authorizing any response.
+    monkeypatch.setattr(
+        module, "_health_exchange", lambda *args: exchanges.append(True)
+    )
     # Leave all other launch behavior unchanged.
     monkeypatch.setattr(module, "_report", changed)
-    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH"):
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
         module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    # Fixed field gate label.
+    assert failure.value.identity_checkpoint == "REPORT_FIELDS"
+    assert failure.value.__notes__ == [  # No rejected field values enter diagnostics.
+        "IDENTITY_CHECKPOINT=REPORT_FIELDS"
+    ]
+    assert not exchanges  # A valid command cannot make an invalid report authoritative.
     assert_reaped(launches)  # Invalid evidence cannot skip cleanup.
 
 
@@ -370,8 +389,11 @@ def test_changed_boot_invalidates_existing_attempt(module, launches, monkeypatch
     monkeypatch.setattr(
         module, "_boot", lambda: next(observations)
     )  # Change one trusted reference.
-    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH"):
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
         module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert failure.value.identity_checkpoint == "REPORT_BOOT"  # Fixed boot-stage label.
+    # Never expose either boot identity in an error.
+    assert failure.value.__notes__ == ["IDENTITY_CHECKPOINT=REPORT_BOOT"]
     assert_reaped(
         launches
     )  # Even failed identity evidence must retain exact child ownership.
@@ -592,3 +614,393 @@ def test_closed_channel_reconciliation_keeps_original_deadline(module, monkeypat
         assert [limit for _, limit in calls] == [123.0, 123.0]
     finally:  # Releasing an already rejected owned endpoint is idempotent.
         parent.close()  # Close only the test's owned transport reference.
+
+
+@pytest.mark.parametrize(
+    "mode,reason",
+    [
+        ("health_malformed", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_mismatch", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_lifetime", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_generation", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_silent", "HEALTH_RESPONSE_EXPIRED"),
+        ("health_duplicate", "UNEXPECTED_PACKET_AFTER_EXIT"),
+    ],
+)
+def test_real_health_failure_stops_and_reaps(module, launches, mode, reason):
+    """Reject bad or missing replies across the actual child boundary."""
+    before = len(os.listdir("/proc/self/fd"))  # Independently count owned descriptors.
+    with pytest.raises(module.HandoffError, match=reason) as failure:
+        module.run_case(  # Launch only the fixed reviewed negative fixture.
+            duplicate=False, startup_seconds=5, cleanup_seconds=2, _mode=mode
+        )
+    assert failure.value.cleanup_complete is True  # Rejection still requires cleanup.
+    assert len(launches) == 1  # Never replace the failed child automatically.
+    assert_reaped(
+        launches
+    )  # Verify actual reaping rather than accepting a signal result.
+    assert (
+        len(os.listdir("/proc/self/fd")) == before
+    )  # Failure must not leak endpoints.
+
+
+def test_health_send_backpressure_is_not_retried(module, launches, monkeypatch):
+    """A full challenge queue cannot create another token, send, or child."""
+    original = (
+        module.Endpoint.send
+    )  # Keep real fixture-report and exit behavior available.
+    challenges = []  # Count actual parent challenge send attempts only.
+
+    def send(endpoint, packet):
+        if b'"kind":"challenge"' in packet:  # Match the protocol's canonical encoding.
+            challenges.append(packet)  # Record the attempted complete packet.
+            raise module.WouldBlock()  # Model immediate nonblocking backpressure.
+        return original(
+            endpoint, packet
+        )  # Do not alter unrelated transport operations.
+
+    monkeypatch.setattr(module.Endpoint, "send", send)  # Inject only the parent fault.
+    with pytest.raises(module.HandoffError, match="TRANSPORT_WOULD_BLOCK"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert len(challenges) == 1  # No resend or replacement challenge is permitted.
+    assert len(launches) == 1  # Queue failure cannot launch a second child.
+    assert_reaped(launches)  # Independently check cleanup of the original child.
+
+
+def test_health_receive_race_preserves_one_challenge(module, launches, monkeypatch):
+    """Temporary receive unavailability returns to waiting without a new exchange."""
+    original = module.Endpoint.receive  # Preserve real packet delivery after one race.
+    calls = []  # Count parent receives: report, injected race, then actual reply.
+
+    def receive(endpoint):
+        calls.append(endpoint)  # Track only this parent's receive operations.
+        if len(calls) == 2:  # Leave the queued health response untouched on this call.
+            # Model readiness followed by temporary no progress.
+            raise module.WouldBlock()
+        return original(endpoint)  # The next bounded wait can receive the same reply.
+
+    monkeypatch.setattr(module.Endpoint, "receive", receive)  # Child remains unchanged.
+    result = module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert (
+        result["synthetic_health_exchange_accepted"] is True
+    )  # Actual reply validated.
+    assert len(launches) == 1  # A read race must not cause relaunch.
+    assert_reaped(launches)  # Preserve independent exit and cleanup evidence.
+
+
+def test_late_health_reply_cannot_pass(module, launches, monkeypatch):
+    """A real valid reply fails when its acceptance timestamp exceeds the budget."""
+    original = module.Session.accept  # Keep the actual protocol validation in use.
+
+    def accept(session, packet, received_ns):
+        return original(  # Model scheduling delay after delivery without sleeping.
+            session, packet, received_ns + 2 * module._HEALTH_TIMEOUT_NS
+        )
+
+    monkeypatch.setattr(
+        module.Session, "accept", accept
+    )  # Affect only parent acceptance.
+    with pytest.raises(module.HandoffError, match="HEALTH_EXCHANGE_REJECTED"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert len(launches) == 1  # A late response cannot reopen the attempt.
+    assert_reaped(launches)  # The failure still releases the retained child.
+
+
+def test_replayed_health_reply_cannot_pass(module, launches, monkeypatch):
+    """The same real response cannot satisfy a second acceptance on its session."""
+    original = module.Session.accept  # Reuse the real outstanding-challenge state.
+
+    def accept(session, packet, received_ns):
+        original(session, packet, received_ns)  # Consume the one legitimate reply.
+        original(
+            session, packet, received_ns
+        )  # Replay must latch failure, not succeed.
+
+    monkeypatch.setattr(
+        module.Session, "accept", accept
+    )  # Inject replay at validation.
+    with pytest.raises(module.HandoffError, match="HEALTH_EXCHANGE_REJECTED"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert len(launches) == 1  # No fresh child or exchange repairs a failed session.
+    assert_reaped(
+        launches
+    )  # Independently confirm the unsuccessful attempt was cleaned.
+
+
+def test_peer_loss_during_health_exchange_stops(module, launches):
+    """Peer closure never substitutes for a matching reply or verified cleanup."""
+    with pytest.raises(module.HandoffError) as failure:
+        module.run_case(  # Fixed fixture exits after receiving its challenge.
+            duplicate=False, startup_seconds=5, cleanup_seconds=2, _mode="health_close"
+        )
+    assert str(failure.value) in {  # Kernel socket-close and exit status may race.
+        "HEALTH_CHILD_EXITED",  # The independent pidfd observed exit first.
+        "TRANSPORT_FAILED",  # Socket closure became visible before pidfd exit.
+    }
+    assert (
+        failure.value.cleanup_complete is True
+    )  # Both paths require confirmed cleanup.
+    assert len(launches) == 1  # Peer loss cannot silently restart the attempt.
+    assert_reaped(launches)  # Independently confirm the exact child was reaped.
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        "COMMAND_SNAPSHOT",  # The bounded kernel command observation disagrees.
+        "REPORT_START_REFERENCE",  # The bracketing process-start references disagree.
+        "REPORT_CHILD_EXIT",  # Independent exit observation rejects the report stage.
+        "HEALTH_START_REFERENCE",  # Identity changes after the valid synthetic reply.
+        "HEALTH_BOOT",  # The post-reply boot observation changes.
+        "HEALTH_CHILD_EXIT",  # Exit is observed after the accepted reply.
+    ],
+)
+def test_identity_checkpoint_rejects_and_reaps(
+    module, launches, monkeypatch, checkpoint
+):
+    """Identify an injected checkpoint without accepting its failure or retrying it."""
+    inspect = module._inspect  # Preserve actual retained-child kernel inspection.
+    report = module._report  # Keep actual packet receipt before report-stage faults.
+    exchange = module._health_exchange  # Complete the real reply before later faults.
+    boot = module._boot  # Preserve actual boot observations except the selected fault.
+    exited = module._child_exited  # Keep real exit evidence outside the injected gate.
+    # Track boundaries, not scheduling delays.
+    phase = {"report": False, "health": False}
+    before = len(os.listdir("/proc/self/fd"))  # Independent resource baseline.
+
+    def receive_report(*args):
+        value = report(*args)  # Do not substitute synthetic report success.
+        phase["report"] = True  # The next identity bracket belongs to the report gate.
+        return value  # Let all normal kernel and report checks still run.
+
+    def health(*args):
+        # First accept a real timely response through the real transport.
+        exchange(*args)
+        phase["health"] = True  # Only later observations receive post-reply faults.
+
+    def observe(pid, command):
+        if checkpoint == "COMMAND_SNAPSHOT":  # Fault expected comparison, not launch.
+            # Real kernel bytes must reject.
+            return inspect(pid, (*command, "unexpected"))
+        ticks = inspect(pid, command)  # Read the actual owned child before injection.
+        if checkpoint == "REPORT_START_REFERENCE" and phase["report"]:
+            return ticks + 1  # Model a changed independently observed start reference.
+        if checkpoint == "HEALTH_START_REFERENCE" and phase["health"]:
+            return ticks + 1  # Do not change the fixture's actual process or reply.
+        return ticks  # Leave unselected checkpoints unchanged.
+
+    def observe_boot():
+        value = boot()  # Obtain the normal host reference first.
+        if checkpoint == "HEALTH_BOOT" and phase["health"]:
+            return "0" * 36  # A deliberately different observation, never new trust.
+        return value  # Preserve startup and report-stage source context.
+
+    def observe_exit(pidfd):
+        if checkpoint == "REPORT_CHILD_EXIT" and phase["report"]:
+            return True  # Model exit at the report gate while retaining real cleanup.
+        if checkpoint == "HEALTH_CHILD_EXIT" and phase["health"]:
+            return True  # A previously valid reply must not bypass this rejection.
+        # Preserve earlier actual retained-generation observations.
+        return exited(pidfd)
+
+    # Mark the real report boundary.
+    monkeypatch.setattr(module, "_report", receive_report)
+    # Mark the real reply boundary.
+    monkeypatch.setattr(module, "_health_exchange", health)
+    # Inject only selected identity data.
+    monkeypatch.setattr(module, "_inspect", observe)
+    # Change only the selected boot gate.
+    monkeypatch.setattr(module, "_boot", observe_boot)
+    # Preserve real cleanup APIs.
+    monkeypatch.setattr(module, "_child_exited", observe_exit)
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert str(failure.value) == "IDENTITY_MISMATCH"  # Preserve the high-level reason.
+    assert failure.value.identity_checkpoint == checkpoint  # Identify the actual gate.
+    # No earlier fault advances.
+    assert phase["health"] is checkpoint.startswith("HEALTH_")
+    assert failure.value.__notes__ == [  # Notes contain only a fixed public-safe label.
+        "IDENTITY_CHECKPOINT=" + checkpoint
+    ]
+    # No diagnosis substitutes for cleanup.
+    assert failure.value.cleanup_complete is True
+    # Diagnostic labeling cannot create retries or new children.
+    assert len(launches) == 1
+    assert_reaped(launches)  # Independently establish the owned child's final state.
+    # Reject without descriptor leaks.
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_command_checks_follow_report_without_early_read(
+    module, launches, monkeypatch, duplicate
+):
+    """An unpublished early command is never queried or accepted as identity."""
+    import io  # Model an empty early kernel read without sleeps or a real race.
+
+    report = module._report  # Keep the actual bounded report exchange.
+    start = module._start_reference  # Preserve independent process-start evidence.
+    inspect = module._inspect  # Keep every strict command comparison in use.
+    witness = module._endpoint_witness  # Preserve the independent owned-socket gate.
+    # Preserve independent original-descriptor absence.
+    absence = module._original_absent
+    health = module._health_exchange  # Keep the real challenge and response path.
+    open_path = Path.open  # Delegate unmodified kernel reads to the real filesystem.
+    # A report indicates progress only; its identity remains untrusted.
+    received = False
+    # Record the security-relevant order without imposing scheduling delays.
+    events = []
+    # Count command reads so an automatic retry cannot hide the first result.
+    reads = []
+
+    def read(path, *args, **kwargs):
+        if path.name == "cmdline":  # Fault only the existing fixed-path kernel query.
+            reads.append(received)  # Record whether the report preceded this read.
+            # The earlier implementation would observe this empty value.
+            if not received:
+                # No permissive replacement or retry is supplied.
+                return io.BytesIO(b"")
+        return open_path(path, *args, **kwargs)  # Keep normal post-report reads real.
+
+    def observe_start(pid):
+        if not received:  # A trusted lifetime witness must still precede the report.
+            events.append("initial_start")  # This is not a command-profile observation.
+        return start(pid)  # Use the actual retained child, never a reported PID.
+
+    def receive(*args):
+        nonlocal received  # Update only this test's progress boundary.
+        value = report(*args)  # Receive and parse the real bounded fixture report.
+        received = True  # Signal progress, not trusted identity or permission.
+        events.append("report")  # Later strict checks must follow this point.
+        return value  # Do not alter the child's report values.
+
+    def observe(*args):
+        events.append("command")  # Mark each full comparison before its real execution.
+        return inspect(*args)  # Empty or wrong post-report snapshots still reject.
+
+    def socket_gate(*args):
+        events.append("endpoint")  # Require two full checks around this witness.
+        return witness(*args)  # Validate the actual kernel socket identity and flags.
+
+    def original_gate(*args):
+        events.append("original_absence")  # Keep this separate from the child's claim.
+        return absence(*args)  # Independently inspect the retained child's descriptor.
+
+    def exchange(*args):
+        events.append("health")  # No challenge may precede both profile checks.
+        # Perform the real synthetic exchange under the old deadline.
+        return health(*args)
+
+    # Supply a deterministic early-empty scenario.
+    monkeypatch.setattr(Path, "open", read)
+    # Keep lifetime coverage.
+    monkeypatch.setattr(module, "_start_reference", observe_start)
+    monkeypatch.setattr(module, "_report", receive)  # Mark actual report completion.
+    monkeypatch.setattr(module, "_inspect", observe)  # Count every full identity check.
+    # Keep the kernel gate.
+    monkeypatch.setattr(module, "_endpoint_witness", socket_gate)
+    # Keep the absence gate.
+    monkeypatch.setattr(module, "_original_absent", original_gate)
+    # Observe real challenge order.
+    monkeypatch.setattr(module, "_health_exchange", exchange)
+    result = module.run_case(duplicate=duplicate, startup_seconds=5, cleanup_seconds=2)
+    # Two pre-health checks plus the post-reply check.
+    assert reads == [True, True, True]
+    assert events == [  # No sleeps, identity retries, or reordered permission gates.
+        "initial_start",
+        "report",
+        "command",
+        "endpoint",
+        "original_absence",
+        "command",
+        "health",
+        "command",
+    ]
+    # Real reply was checked.
+    assert result["synthetic_health_exchange_accepted"] is True
+    # This proves no execution authority.
+    assert result["approval_eligibility"] == "blocked"
+    assert_reaped(launches)  # Independently verify final ownership cleanup.
+
+
+@pytest.mark.parametrize("command_number", [1, 2, 3])
+@pytest.mark.parametrize("fault", ["empty", "oversized", "different"])
+def test_post_report_command_failure_is_never_retried(
+    module, launches, monkeypatch, command_number, fault
+):
+    """All three post-report profile checks reject bad evidence on their first read."""
+    # Supply bounded deterministic kernel observations without altering the child.
+    import io
+
+    open_path = Path.open  # Preserve all unselected actual kernel observations.
+    exchange = module._health_exchange  # Observe whether a real reply already occurred.
+    reads = []  # Count strict command queries independently of the result message.
+    exchanges = []  # Earlier profile rejection must prevent the health challenge.
+    before = len(os.listdir("/proc/self/fd"))  # Independently count owned descriptors.
+
+    def read(path, *args, **kwargs):
+        if path.name == "cmdline":  # Change only the selected command snapshot.
+            # Each query consumes one observation; no retries allowed.
+            reads.append(True)
+            if len(reads) == command_number:  # Fault one existing full-profile check.
+                value = {  # Keep each fault bounded and distinct from valid argv.
+                    "empty": b"",  # Startup or unavailable publication is not accepted.
+                    "oversized": b"x" * (module.QUERY_BYTES + 1),  # Detect overflow.
+                    "different": b"unexpected-command\0",  # Reject a different profile.
+                }[fault]
+                return io.BytesIO(value)  # The actual comparison must reject this read.
+        return open_path(path, *args, **kwargs)  # Do not fake other identity evidence.
+
+    def health(*args):
+        exchanges.append(True)  # Only the third profile check follows an exchange.
+        return exchange(*args)  # Keep the real protocol validator and transport.
+
+    monkeypatch.setattr(Path, "open", read)  # Inject only parent-side observation data.
+    # Record protocol progression.
+    monkeypatch.setattr(module, "_health_exchange", health)
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    # Keep precise diagnosis.
+    assert failure.value.identity_checkpoint == "COMMAND_SNAPSHOT"
+    # Never read again until an identity happens to match.
+    assert len(reads) == command_number
+    assert len(exchanges) == (1 if command_number == 3 else 0)  # Keep challenge gates.
+    # Failed identity still requires cleanup.
+    assert failure.value.cleanup_complete is True
+    assert len(launches) == 1  # Do not replace the rejected child.
+    assert_reaped(launches)  # Independently confirm the exact owned child's exit.
+    # No descriptor leak after rejection.
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+def test_pre_report_start_reference_cannot_be_replaced(module, launches, monkeypatch):
+    """A valid report and matching command cannot replace a changed start witness."""
+    start = module._start_reference  # Preserve real process-state parsing.
+    received = False  # Identify the one pre-report observation deterministically.
+    report = module._report  # Keep the real progress packet and its bounded parser.
+    exchanges = []  # A changed start reference must block the health exchange.
+
+    def observe(pid):
+        value = start(pid)  # Obtain the actual retained-child reference first.
+        return value if received else value + 1  # Model a changed pre-report witness.
+
+    def receive(*args):
+        nonlocal received  # Do not replace the report or its expected identity fields.
+        # Wait for the real child report under the original deadline.
+        value = report(*args)
+        # Subsequent independent observations report the actual reference.
+        received = True
+        return value  # The parent must compare against its earlier witness.
+
+    # Change only initial evidence.
+    monkeypatch.setattr(module, "_start_reference", observe)
+    monkeypatch.setattr(module, "_report", receive)  # Preserve the actual report path.
+    monkeypatch.setattr(
+        module, "_health_exchange", lambda *args: exchanges.append(True)
+    )
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    # Reject the change.
+    assert failure.value.identity_checkpoint == "REPORT_START_REFERENCE"
+    assert not exchanges  # A report cannot grant permission to advance.
+    assert_reaped(launches)  # Reconcile and clean up only the retained owned child.
