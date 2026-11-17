@@ -472,80 +472,113 @@ Primary references for the proposed launch/lifetime rules:
 harmless fixed local fixtures with explicit five-second startup and two-second
 cleanup budgets per case. It requires Linux pidfd support and the validation
 Python environment. No sudo, Docker, network exchange, or clock change is needed.
-CI runs this opt-in command and strict-checks both new support files. Focused
+Existing CI runs the command and strict-checks both support files. Focused
 failure tests are in `tests/test_nts_child_handoff.py`.
 
-The first case passes only the designated socket endpoint across exec, using a
-fixed absolute interpreter and adjacent reviewed fixture, isolated Python mode,
-controlled environment/working directory, close_fds, and one pass_fds entry.
-Standard streams go to DEVNULL. A deliberately inheritable unrelated marker and
-the supervisor's endpoint must be absent in the child. The child restores its
-endpoint's close-on-exec flag and sends one bounded fixture report. The parent
-independently brackets that report with bounded kernel start-time/command reads,
-checks the endpoint inode and close-on-exec flag through kernel fdinfo, checks
-the boot boundary, and observes exit through a retained pidfd before reaping.
-It then confirms that closure is observable on the socket.
+Both cases now use bounded transport creation and checked adoption. The parent
+creates the pair with an explicit 8 KiB buffer request and 16 KiB accepted
+kernel-readback ceiling. It records the child endpoint's device and inode before
+launch. The fixed absolute interpreter/fixture, isolated Python mode, controlled
+environment/working directory, close_fds, and one pass_fds entry remain required.
+Standard streams go to DEVNULL. Expected identity and resource bounds travel
+only through the fixed fixture arguments; this is not a general trusted-bootstrap
+message protocol, and no expected identity comes from a reply.
 
-The second case deliberately retains the parent's child-end copy. After the
-child exits, the pidfd still reports its exit while a nonblocking socket read
-reports would-block rather than closure. Only after closing that spare copy does
-closure become observable. The retained copy is an intentional negative fixture,
-not an allowed readiness configuration. These observations prove why socket
-closure cannot replace independent child-lifetime monitoring.
+Isolated Python excludes the script directory from imports. The fixed fixture
+therefore temporarily adds only its own reviewed absolute support directory to
+load the protocol and transport modules, then restores the prior search path.
+No argument or environment variable selects that directory. The interpreter,
+fixture, and support files must remain reviewed and unchanged; this is not
+executable attestation or a defense against host tampering.
 
-The fixed fixture uses raw local sockets and the existing packet ceiling. It
-does not use checked transport adoption; its inheritance report remains
-separate from the health protocol. The fixture cannot
-execute supplied commands. The parent inspects only its retained direct child;
-it never follows a PID asserted in a packet. Explicit default SIGCHLD behavior,
-single Python-thread ownership, no competing/native reaper, reviewed unchanged
-fixture files, and a controlled host remain prerequisites. A pidfd wait must
-confirm the direct-child association before accepting evidence. This test does
-not establish isolation from privileged or same-user process interference.
+The child first checks that the supervisor endpoint and deliberately inheritable
+unrelated marker were excluded. It then validates an owned duplicate through
+adopt_inherited and explicitly closes its inherited original exactly once.
+Adoption does not close that original for it. Descriptor numbers can be reused:
+the new owned duplicate may occupy a slot that was excluded earlier. Numbers
+alone therefore cannot identify objects or prove universal confinement.
 
-The startup deadline includes resource preparation, launch, local inspection,
-reporting, and exit observation. Readiness waits use only its remainder. Late
-startup fails; initial process creation and kernel scheduling are not guaranteed
-interruptible. The child also has a bounded lifetime. Separate cleanup targets
-only the retained owned child, using the pidfd when available. If pidfd setup
-failed, cleanup requires the still-unreaped direct-child association before
-using its launch handle. No name-based kill, replacement launch, or deadline
-reset is performed. Signal acknowledgement is followed by a bounded wait/reap;
-close errors or unverified cleanup prevent an overall PASS. If launch was
-attempted but no child handle was returned, child cleanup remains unverified;
-closing local descriptors cannot establish that no child was created. A failed cleanup
-attempt never authorizes repeated actions against a reused numeric reference.
+The version-2 bounded fixture report includes the owned-copy locator and an
+original-release assertion. Version 1 cannot satisfy the checked-copy proof.
+The parent validates locator type/range and rejects the original descriptor as
+a supposed duplicate. Within its retained child only, it independently checks
+the locator's kernel socket type, device/inode, close-on-exec and nonblocking
+flags against pre-launch evidence. It separately checks absence of the original
+slot and brackets these observations with lifetime/exit checks. Inaccessible
+evidence fails; a child assertion alone cannot establish original release.
+These are point observations under the fixed no-replacement/no-new-work profile,
+not proof of uninterrupted stability or absence of every possible copy.
 
-The harness emits bounded JSON observations containing actual local process
-references, followed by PASS only after both cases and cleanup pass. Preserve
-that receipt privately; do not commit its operational fields. The synthetic
-failure tests cover launch failure, unavailable pidfds or identity evidence,
-early exit, stall, late startup, unexpected descriptor inheritance, malformed
-reports, and missing cleanup confirmation. Useful observations do not convert a
-failed or uncertain run into a successful result.
+All normal send/receive operations now use the existing bounded Endpoint API.
+Private descriptor access is restricted to this synthetic proof's pass_fds,
+read-only readiness polling, and flag inspection. It is not a general endpoint
+export API. Malformed, oversized, ancillary, or unexpected packets cannot fall
+back to a permissive raw receiver. The fixed child accepts only one harmless
+exit instruction and does not execute supplied commands.
+
+The first case closes the parent's spare child-end copy. The child closes its
+own inherited original after adoption, communicates using the validated copy,
+and exits. The parent observes exit independently through its retained pidfd
+before reaping. It then combines kernel hangup flags with the transport's
+EMPTY_OR_CLOSED rejection to confirm this controlled profile's closure. Empty
+bytes or a transport error alone are insufficient evidence.
+
+The second case deliberately retains the parent's child-end copy. After child
+exit, the pidfd still reports exit while receive reports would-block. Only after
+closing the parent's spare copy does closure become observable. This retained
+copy is an intentional negative fixture, never an allowed readiness setup.
+Neither case relies on socket closure to infer the child's lifetime.
+
+Startup covers preparation, launch, inspection, adoption, reporting, and exit
+observation under one original deadline. If channel closure arrives before
+final exit status, failed-start reconciliation observes only the retained pidfd
+within that same deadline. It cannot reopen the channel, accept a late report,
+resend an instruction, or renew readiness. Fixture exit status 6 preserves
+unconfirmed original/duplicate release as an explicit failed attempt. Eventual
+process cleanup cannot turn that failed attempt into success.
+
+Initial process creation and kernel scheduling are not guaranteed interruptible.
+The child also has a bounded lifetime. Separate cleanup signals only the retained
+owned child and verifies exit/reaping, using the pidfd when available. Failed
+pidfd setup requires the still-unreaped direct-child association before using
+its launch handle. No name-based kill, replacement launch, or deadline reset is
+allowed. A missing launch handle leaves child cleanup unverified; closing local
+descriptors cannot establish that no child was created. Owned original and
+adopted references have distinct cleanup paths; uncertain numeric closes are
+not retried. Unverified cleanup prevents overall success.
+
+The harness emits bounded private JSON records, including checked-adoption use
+and the independently observed original absence, followed by PASS only after
+both cases and cleanup pass. Public examples remain synthetic; operational
+receipts must not enter Git. Failure tests preserve the earlier launch, lifetime,
+timeout, inheritance, malformed-report, and cleanup cases. They also reject
+wrong expected identity/resource settings, invalid owned-copy locators, a false
+original-release assertion with the original actually retained, and lost
+confirmation after the original really closed.
 
 For independent troubleshooting:
 
 | Failure | Inspect and independently check | Correction boundary |
 | --- | --- | --- |
-| Unsafe ownership or unavailable pidfd | Verify a fresh single-owner validation process, Linux support, and signal/wait prerequisites | Restore the required environment; do not skip lifetime checks |
-| Child exits before its report | Inspect the fixed fixture's argument, descriptor, and deadline checks against the recorded launch | Correct the fixed launch path; do not accept an old report |
-| Identity or endpoint mismatch | Compare bounded kernel observations with the retained handle and reviewed fixture | Reconcile the failed attempt before another separately authorized run |
-| Missing or late report | Check original budget, actual exit witness, and excluded-descriptor handling | Fix the observed cause without extending the failed attempt |
-| Cleanup uncertainty | Reconcile the recorded owned child and descriptor state using trusted local evidence | Do not infer exit from a signal or blindly reuse a numeric PID |
+| Unsafe ownership or unavailable pidfd | Check a fresh single-owner process and Linux signal/wait support | Restore prerequisites; do not skip lifetime checks |
+| Child exits before its report | Compare the fixed argv and adoption inputs with captured pre-launch identity | Correct the observed mismatch without accepting an old report |
+| Invalid owned locator or endpoint mismatch | Compare the retained child's kernel device/inode and flags | Never follow a child-selected PID or trust the locator alone |
+| Original remains open or its release is uncertain | Inspect the child's explicit source-close path and parent absence gate | No blind close retry or readiness claim |
+| Missing/late report or pending exit status | Check the original deadline and retained pidfd evidence | No replacement budget or permissive receive fallback |
+| Cleanup uncertainty | Reconcile only the recorded owned child and descriptor state | Do not infer exit from a signal or reuse numeric references blindly |
 
-Comments explain each meaningful new code statement and multi-line component.
-The fixed child file handles descriptor validation/reporting; the harness owns
-launch, independent observations, and cleanup; focused tests reproduce failures
-without weakening the acceptance gate. These files and the command above allow
-review without AI. Diagnose the first observed divergence before modifying code.
+Purpose comments identify the child's adoption/ownership transitions, the
+parent's independent observations, and the focused failure tests. These files
+and the command above support verification without AI. Diagnose the first
+observed divergence before changing code or weakening a check.
 
-This proves only the selected synthetic launch path. It does not prove absence
-of every possible descriptor copy, executable attestation, per-message sender
-identity, or actual watchdog readiness. Watchdog bootstrap, transport handoff,
-health-loop integration, independent supervision, and live failure proofs remain
-open. Live NTS collection remains unstarted; measurement age remains unknown and
-approval eligibility remains blocked.
+This remains a fixed synthetic launch-path proof under explicit reviewed-code,
+controlled-host, single Python-thread, and no competing/native reaper assumptions.
+It does not establish per-message sender authentication, universal descriptor
+confinement, executable attestation, or actual watchdog readiness. Real watchdog
+handoff, general trusted-bootstrap delivery, health-loop integration, independent
+supervision, and live failure proofs remain open. Live NTS collection remains
+unstarted; measurement age remains unknown and approval eligibility blocked.
 
 ### Checked inherited-endpoint adoption
 
@@ -612,9 +645,9 @@ for cleanup uncertainty, reconcile only the owned copy without closing or
 retrying the borrowed descriptor. Correct the cause rather than disabling the
 identity, type, or resource checks.
 
-The existing synthetic child proof still uses raw sockets. Adopting an endpoint
-inside that child, delivering trusted bootstrap context, verifying sender origin,
-and integrating watchdog health supervision remain separate work. Adoption
+The synthetic child proof above now uses checked adoption with fixed trusted
+fixture context. Real watchdog handoff, a general bootstrap-delivery protocol,
+sender verification, and health supervision remain separate work. Adoption
 alone supplies no execution authority. Live collection remains unstarted,
 measurement age remains unknown, and approval eligibility remains blocked.
 

@@ -5,7 +5,7 @@ import math  # Reject non-finite timing budgets before creating resources.
 import os  # Retain pidfds and inspect only the owned direct child.
 import select  # Observe socket readiness and child exit without busy waiting.
 import signal  # Signal only the retained owned child during bounded cleanup.
-import socket  # Exercise raw local inheritance, not production endpoint adoption.
+import stat  # Compare kernel socket type and device identity in the retained child.
 import subprocess  # Launch only the adjacent reviewed harmless fixture.
 import sys  # Select this validation interpreter and the explicit opt-in CLI.
 import threading  # Reject competing Python-thread ownership in this isolated proof.
@@ -24,6 +24,19 @@ from nts_container_watchdog import (
 from nts_health_protocol import (
     PACKET_BYTES,
 )
+
+# Use existing bounded transport without changing its API.
+from nts_health_transport import (
+    Endpoint,  # Track parent-side ownership through the existing transport objects.
+    # Preserve validation and close uncertainty as failed proof evidence.
+    TransportError,
+    WouldBlock,  # Wait only under the original startup budget when receive has no data.
+    create_pair,  # Configure both ends under explicit accepted buffer bounds.
+)
+
+_BUFFER_BYTES = 8192  # Explicit synthetic transport setting, not a production default.
+_BUFFER_CEILING = 16384  # Accept the expected Linux-adjusted test buffer readback.
+
 
 # Fix the fixture.
 _CHILD = Path(__file__).with_name("nts_child_handoff_fixture.py").resolve()
@@ -136,10 +149,24 @@ def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
     return ticks  # The caller brackets the fixture report with this local witness.
 
 
-def _endpoint_witness(pid: int, endpoint_fd: int, expected_inode: int) -> None:
+def _endpoint_witness(
+    pid: int, endpoint_fd: int, expected_inode: int, expected_device: int
+) -> None:
     """Independently verify the child's endpoint and restored close-on-exec flag."""
-    # Inspect only our child.
-    path = Path("/proc") / str(pid) / "fdinfo" / str(endpoint_fd)
+    # A reported descriptor is only a locator inside our retained child.
+    root = Path("/proc") / str(pid)
+    observed = (root / "fd" / str(endpoint_fd)).stat()  # Read kernel object identity.
+    if (
+        not stat.S_ISSOCK(observed.st_mode)
+        or observed.st_ino != expected_inode
+        or observed.st_dev != expected_device
+    ):
+        raise HandoffError(
+            "ENDPOINT_MISMATCH"
+        )  # Message fields cannot establish identity.
+    path = (
+        root / "fdinfo" / str(endpoint_fd)
+    )  # Read flags for that same bounded locator.
     # Use bounded kernel data, not the child's assertions.
     with path.open("rb") as source:
         # One extra byte distinguishes overflow from valid evidence.
@@ -148,27 +175,114 @@ def _endpoint_witness(pid: int, endpoint_fd: int, expected_inode: int) -> None:
         raise HandoffError("IDENTITY_UNAVAILABLE")  # Missing evidence cannot pass.
     # Parse fixed fdinfo pairs.
     fields = dict(line.split(b":", 1) for line in raw.splitlines())
-    if int(fields[b"ino"]) != expected_inode or not (
-        int(fields[b"flags"], 8) & os.O_CLOEXEC
+    if (
+        int(fields[b"ino"]) != expected_inode
+        or not (int(fields[b"flags"], 8) & os.O_CLOEXEC)
+        or not (int(fields[b"flags"], 8) & os.O_NONBLOCK)
     ):
         # Match both the endpoint and ownership flag.
         raise HandoffError("ENDPOINT_MISMATCH")
+
+
+def _original_absent(pid: int, original_fd: int) -> None:
+    """Check the original slot separately; later lifetime checks still have to pass."""
+    path = (
+        Path("/proc") / str(pid) / "fdinfo" / str(original_fd)
+    )  # Inspect only our child.
+    try:  # Permission errors cannot be mistaken for absence.
+        with path.open("rb") as source:  # An existing entry disproves original release.
+            source.read(1)  # No unbounded contents need to be retained to reject it.
+    except (
+        FileNotFoundError
+    ):  # This point observation is bracketed by child lifetime checks.
+        # Do not infer uninterrupted absence or universal descriptor confinement.
+        return
+    raise HandoffError(
+        "ORIGINAL_STILL_OPEN"
+    )  # Adoption alone cannot establish source release.
+
+
+def _adoption_context(identity: os.stat_result) -> tuple[str, ...]:
+    """Format only the parent's captured identity and explicit synthetic bounds."""
+    return (
+        str(identity.st_dev),  # Expected identity never originates in a child reply.
+        str(identity.st_ino),  # Retain the exact pre-launch socket object reference.
+        str(_BUFFER_BYTES),  # No child-selected resource defaults are accepted.
+        str(_BUFFER_CEILING),  # Preserve the accepted kernel readback limit.
+    )
+
+
+def _descriptor(endpoint: Endpoint) -> int:
+    """Read a proof-owned descriptor for launch or readiness inspection."""
+    return (
+        endpoint._owned().fileno()
+    )  # Synthetic internal access, not a general handoff API.
+
+
+def _closure_observed(endpoint: Endpoint) -> bool:
+    """Check kernel closure and transport rejection after verified child exit."""
+    poller = select.poll()  # Do not wait or consume data outside the bounded transport.
+    mask = (
+        select.POLLHUP | select.POLLRDHUP
+    )  # Require an independent current closure flag.
+    poller.register(
+        _descriptor(endpoint), mask
+    )  # Keep the exact owned endpoint association.
+    closed = any(
+        flags & mask for _, flags in poller.poll(0)
+    )  # Zero-time state observation.
+    try:  # Exercise the actual bounded receive rather than a permissive raw fallback.
+        # Unexpected data after verified fixture exit invalidates the proof.
+        endpoint.receive()
+    except (
+        WouldBlock
+    ):  # A retained parent-side copy should keep the empty connection open.
+        if (
+            closed
+        ):  # Contradictory point observations cannot establish the expected case.
+            # Fail instead of guessing.
+            raise HandoffError("CLOSURE_NOT_OBSERVED") from None
+        return (
+            False  # This says nothing about child lifetime without the retained pidfd.
+        )
+    except (
+        TransportError
+    ) as error:  # Empty/closed input is not a valid transport packet.
+        if (
+            not error.cleanup_complete
+        ):  # Do not hide a close failure behind expected EOF.
+            raise HandoffError("CLEANUP_UNVERIFIED", cleanup_complete=False) from None
+        if (
+            str(error) != "EMPTY_OR_CLOSED" or not closed
+        ):  # Empty packet alone is ambiguous.
+            raise HandoffError(
+                "CLOSURE_NOT_OBSERVED"
+            ) from None  # Keep evidence meanings distinct.
+        # Verified child exit and the kernel flag support this limited observation.
+        return True
+    raise HandoffError(
+        "UNEXPECTED_PACKET_AFTER_EXIT"
+    )  # Never discard unexpected trailing data.
 
 
 def _child_exited(pidfd: int) -> bool:
     """Check the retained generation without reaping or trusting socket closure."""
     # Observe our waitable generation without reaping or blocking on it.
     state = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if state is not None and state.si_code == os.CLD_EXITED and state.si_status == 6:
+        raise HandoffError(
+            "FIXTURE_RELEASE_UNCONFIRMED"
+        )  # Cleanup success cannot revive the attempt.
     return state is not None  # ECHILD propagates: lost wait ownership is not healthy.
 
 
-def _wait(pidfd: int, endpoint: socket.socket | None, deadline: float) -> None:
+def _wait(pidfd: int, endpoint: Endpoint | None, deadline: float) -> None:
     """Wait for one owned event within the original budget, never indefinitely."""
     poller = select.poll()  # Readiness waiting avoids an output-polling busy loop.
     # Observe independent child exit.
     poller.register(pidfd, select.POLLIN | select.POLLHUP)
     if endpoint is not None:  # Startup also needs a bounded fixture packet.
-        poller.register(endpoint, select.POLLIN | select.POLLHUP)
+        poller.register(_descriptor(endpoint), select.POLLIN | select.POLLHUP)
     _before(deadline)  # Do not issue a new wait after expiry.
     remaining = deadline - time.monotonic()  # Use only the original remaining time.
     # Round once; late return still fails.
@@ -176,7 +290,7 @@ def _wait(pidfd: int, endpoint: socket.socket | None, deadline: float) -> None:
     _before(deadline)  # Scheduling delay cannot turn expired evidence into success.
 
 
-def _report(endpoint: socket.socket, pidfd: int, deadline: float) -> dict[str, object]:
+def _report(endpoint: Endpoint, pidfd: int, deadline: float) -> dict[str, object]:
     """Receive one small fixture packet; exit and invalid input stop startup."""
     while True:  # Every iteration waits for readiness under the unchanged deadline.
         # Observe child exit even if the channel stays open.
@@ -186,15 +300,21 @@ def _report(endpoint: socket.socket, pidfd: int, deadline: float) -> dict[str, o
             # A late queued packet cannot establish readiness.
             raise HandoffError("CHILD_EXITED")
         try:  # Read only after readiness, but retain nonblocking race handling.
-            raw, ancillary, flags, _ = endpoint.recvmsg(
-                PACKET_BYTES, 0, socket.MSG_DONTWAIT
-            )
-        except BlockingIOError:  # Readiness may race without granting a new budget.
+            raw = endpoint.receive()  # Reuse all existing packet and ancillary checks.
+        except WouldBlock:  # Readiness may race without granting a new budget.
             continue  # The next iteration waits instead of spinning on recv.
-        # Empty, truncated, or ancillary input is invalid.
-        if not raw or ancillary or flags:
-            # Never parse partial evidence.
-            raise HandoffError("INVALID_FIXTURE_REPORT")
+        except (
+            TransportError
+        ) as error:  # Invalid packets cannot become fixture evidence.
+            # Socket close can precede publication of the child's final exit status.
+            if str(error) == "EMPTY_OR_CLOSED" and error.cleanup_complete:
+                # This is failed-start reconciliation, never a readiness or retry path.
+                while not _child_exited(pidfd):
+                    _wait(pidfd, None, deadline)  # Preserve the original startup bound.
+                raise HandoffError("CHILD_EXITED") from None  # No report was accepted.
+            raise HandoffError(
+                "INVALID_FIXTURE_REPORT", cleanup_complete=error.cleanup_complete
+            ) from None
         # Parsing is bounded by the existing packet limit.
         report = json.loads(raw, object_pairs_hook=_unique)
         # Enforce the exact fixture schema.
@@ -204,6 +324,10 @@ def _report(endpoint: socket.socket, pidfd: int, deadline: float) -> dict[str, o
             "start_ticks",
             "excluded_closed",
             "non_inheritable",
+            # A bounded untrusted locator, never a child-selected process ID.
+            "owned_fd",
+            # The kernel absence check remains independently required.
+            "original_closed",
         }:
             # Extra fields cannot expand authority.
             raise HandoffError("INVALID_FIXTURE_REPORT")
@@ -272,16 +396,23 @@ def run_case(
     if (
         type(duplicate) is not bool
         or type(_mode) is not str
-        or _mode not in {"normal", "early_exit", "stall"}
+        or _mode
+        not in {
+            "normal",
+            "early_exit",
+            "stall",
+            "source_close_failure",
+            "retain_original",
+        }
     ):
         # No arbitrary child entrypoint or command is accepted.
         raise HandoffError("INVALID_CASE")
     deadline = time.monotonic() + startup_seconds  # Keep one original startup deadline.
     initial_boot = _boot()  # Bind local observations to the same host boot.
     # Track each resource as soon as ownership is acquired.
-    parent: socket.socket | None = None
+    parent: Endpoint | None = None
     # A deliberate retained copy exists only in one case.
-    child: socket.socket | None = None
+    child: Endpoint | None = None
     sentinel: int | None = None  # An unrelated inheritable FD challenges close_fds.
     # Retain the exact direct-child owner.
     process: subprocess.Popen[bytes] | None = None
@@ -291,18 +422,22 @@ def run_case(
         False  # A missing launch handle cannot prove that no child exists.
     )
     try:  # Every exit path attempts cleanup of all resources already owned.
-        # This low-level fixture does not alter transport APIs.
-        parent, child = socket.socketpair(
-            socket.AF_UNIX,
-            socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC,
+        # Reuse bounded pair creation instead of permissive raw socket setup.
+        parent, child = create_pair(
+            buffer_bytes=_BUFFER_BYTES, effective_buffer_limit=_BUFFER_CEILING
         )
         # Create an unrelated marker.
         sentinel = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
         # Deliberately challenge the child's FD allowlist.
         os.set_inheritable(sentinel, True)
-        child_fd = child.fileno()  # Retain the exact handed-off descriptor reference.
+        child_fd = _descriptor(
+            child
+        )  # Retain the exact handed-off descriptor reference.
         # Observe its identity before closing our copy.
-        child_inode = os.fstat(child_fd).st_ino
+        child_identity = os.fstat(
+            child_fd
+        )  # Capture before launch, independently of the reply.
+        child_inode = child_identity.st_ino
         # The exact argv is also independently checked through /proc.
         # Ignore Python environment/path injection.
         # Trusted fixture references.
@@ -312,14 +447,16 @@ def run_case(
             "-I",  # Ignore Python environment and user import-path injection.
             "-B",  # Keep bytecode caches out of the checked archive.
             str(_CHILD),  # Run only the adjacent reviewed harmless fixture.
-            str(child.fileno()),  # Hand over this endpoint, not an external FD.
+            str(child_fd),  # Hand over this endpoint, not an external FD.
             str(
-                parent.fileno()
+                _descriptor(parent)
             ),  # Tell the child which opposite-end FD must be absent.
             str(sentinel),  # Check that an unrelated inheritable FD was excluded.
             repr(deadline),  # Preserve the exact original startup boundary.
             _mode,  # Select only the reviewed harmless failure-test modes.
             str(PACKET_BYTES),  # Check the fixture's bound against the shared ceiling.
+            # The fixed fixture context is not a general bootstrap-message API.
+            *_adoption_context(child_identity),
         )
         _before(deadline)  # Time spent preparing resources counts against startup.
         # Launch only this reviewed harmless child.
@@ -336,7 +473,7 @@ def run_case(
             command,  # No caller-supplied command can enter this fixture launch.
             shell=False,  # Do not reinterpret arguments as shell code.
             close_fds=True,  # Close unrelated inherited resources before exec.
-            pass_fds=(child.fileno(),),  # Allow only the designated endpoint.
+            pass_fds=(child_fd,),  # Allow only the designated endpoint.
             stdin=subprocess.DEVNULL,  # Use only the socket for instructions.
             stdout=subprocess.DEVNULL,  # No uncontrolled diagnostic output is retained.
             stderr=subprocess.DEVNULL,  # Use exit status for child failures.
@@ -371,16 +508,34 @@ def run_case(
         before = _inspect(process.pid, command)
         # Wait for bounded inheritance evidence.
         report = _report(parent, pidfd, deadline)
-        # Verify child flags independently.
-        _endpoint_witness(process.pid, child_fd, child_inode)
+        owned_fd = report[
+            "owned_fd"
+        ]  # Treat this as untrusted input, not identity proof.
+        if (
+            type(owned_fd) is not int
+            or not 2 < owned_fd <= (1 << 31) - 1
+            or owned_fd == child_fd
+        ):
+            raise HandoffError(
+                "INVALID_OWNED_REFERENCE"
+            )  # Never build paths from arbitrary data.
+        # Verify the duplicate's kernel identity and flags against trusted launch
+        # evidence.
+        _endpoint_witness(process.pid, owned_fd, child_inode, child_identity.st_dev)
+        _original_absent(
+            process.pid, child_fd
+        )  # Adoption itself left this source copy open.
         # Bracket the report with a second local witness.
         after = _inspect(process.pid, command)
         expected = {
-            "version": 1,
+            # Require the checked-copy fixture report, not the old raw format.
+            "version": 2,
             "pid": process.pid,
             "start_ticks": before,
             "excluded_closed": True,
             "non_inheritable": True,
+            # This assertion alone did not satisfy the kernel gate.
+            "original_closed": True,
         }
         # Matching values must also have exact expected types.
         if (
@@ -396,9 +551,9 @@ def run_case(
             raise HandoffError("IDENTITY_MISMATCH")
         # All observations must remain inside the original startup allowance.
         _before(deadline)
-        if parent.send(b"exit", socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL) != 4:
-            # No partial instruction is accepted.
-            raise HandoffError("EXIT_REQUEST_FAILED")
+        parent.send(
+            b"exit"
+        )  # Reuse all-or-error bounded send; no partial-send fallback.
         # Observe exit independently before reaping the child.
         while not _child_exited(pidfd):
             # Block for the retained generation, never channel EOF.
@@ -408,23 +563,21 @@ def run_case(
         if state is None or state.si_code != os.CLD_EXITED or state.si_status != 0:
             # Exit alone is insufficient for normal proof success.
             raise HandoffError("FIXTURE_FAILED")
-        try:  # Compare socket state only after independent exit was observed.
-            packet = parent.recv(PACKET_BYTES, socket.MSG_DONTWAIT)
-        # A parent-held duplicate should keep an empty channel open.
-        except BlockingIOError:
-            # Normal closure must be observable with no retained spare end.
-            if not duplicate:
-                raise HandoffError("CLOSURE_NOT_OBSERVED") from None
-        else:  # The normal case must observe closure, not unexpected data.
-            # An intentional spare copy must actually hide closure.
-            if duplicate or packet != b"":
-                raise HandoffError("DUPLICATE_PROOF_FAILED")
-        # Release the deliberately retained copy after proving its effect.
-        if child is not None:
-            child.close()  # This is the final child-end copy in the controlled fixture.
-            child = None  # Avoid retrying close on a possibly reused descriptor number.
-            if parent.recv(PACKET_BYTES, socket.MSG_DONTWAIT) != b"":
-                # Closure must now become observable.
+        # Only inspect closure after the retained pidfd independently established child
+        # exit.
+        if _closure_observed(parent) is duplicate:
+            raise HandoffError(
+                "DUPLICATE_PROOF_FAILED"
+            )  # A retained copy must actually hide closure.
+        if (
+            child is not None
+        ):  # Release the deliberately retained parent copy after its proof.
+            # Do not confuse this copy with the child's already-released original.
+            child.close()
+            child = None  # Do not retry a released descriptor number.
+            if not _closure_observed(
+                parent
+            ):  # The final spare-copy release must expose closure.
                 raise HandoffError("CLOSURE_NOT_OBSERVED")
         _before(deadline)  # Receipt success also requires timely completion.
         # Report only the limited observation; never actual watchdog readiness.
@@ -434,7 +587,14 @@ def run_case(
             "start_ticks": before,
             "boot_id": initial_boot,
             "excluded_test_fds_reported_closed": True,  # Validated fixed-child report.
-            "endpoint_cloexec_independently_observed": True,  # Kernel fdinfo witness.
+            "endpoint_cloexec_independently_observed": True,
+            # Both communication paths used bounded transport.
+            "checked_adoption_used": True,
+            # A separate kernel point observation.
+            "child_original_absence_observed": True,
+            # This locator was validated against expected identity.  # Kernel fdinfo
+            # witness.
+            "child_owned_fd": owned_fd,
             "child_exit_independently_observed": True,
             # Returned only if the finally block confirms cleanup.
             "cleanup_complete": True,
@@ -442,6 +602,14 @@ def run_case(
             "measurement_age": "unknown",
             "approval_eligibility": "blocked",
         }
+    except TransportError as error:  # Keep owned-copy cleanup uncertainty explicit.
+        raise HandoffError(
+            "TRANSPORT_FAILED", cleanup_complete=error.cleanup_complete
+        ) from None
+    except WouldBlock:  # A full fixed exit-request queue fails this synthetic attempt.
+        raise HandoffError(
+            "TRANSPORT_WOULD_BLOCK"
+        ) from None  # No automatic resend or new budget.
     # Normalize unavailable or malformed evidence.
     except (
         OSError,
@@ -476,7 +644,8 @@ def run_case(
                     try:  # Close the actual owned socket object once.
                         endpoint.close()  # Only this proof's endpoint is affected.
                     except (
-                        OSError
+                        OSError,
+                        TransportError,
                     ):  # A close error cannot be treated as confirmed release.
                         # Do not retry a descriptor number that may be reused.
                         cleanup_complete = False
