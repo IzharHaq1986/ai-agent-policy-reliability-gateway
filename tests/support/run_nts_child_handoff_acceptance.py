@@ -13,6 +13,7 @@ import threading  # Reject competing Python-thread ownership in this isolated pr
 import time  # Keep one original monotonic startup budget and separate cleanup budget.
 import uuid  # Give each synthetic launch a distinct collection identity.
 from pathlib import Path  # Resolve fixed reviewed files without PATH search.
+from typing import Literal, NoReturn  # Restrict internal diagnostic labels statically.
 
 from nts_command_capture import QUERY_BYTES  # Reuse the existing bounded-read ceiling.
 
@@ -57,6 +58,29 @@ class HandoffError(RuntimeError):
         super().__init__(reason)
         # An action error is not proof of cleanup.
         self.cleanup_complete = cleanup_complete
+        # Only identity rejection sites attach a fixed non-sensitive checkpoint.
+        self.identity_checkpoint: str | None = None
+
+
+def _identity_mismatch(
+    checkpoint: Literal[  # Trusted code selects labels, never packet or process values.
+        "COMMAND_SNAPSHOT",  # Bounded command observation rejected.
+        "REPORT_START_REFERENCE",  # Start references around the report disagree.
+        "REPORT_FIELDS",  # Captured report values or types disagree.
+        "REPORT_BOOT",  # Boot identity at the report gate changed.
+        "REPORT_CHILD_EXIT",  # Independent report-stage exit observation.
+        "HEALTH_START_REFERENCE",  # Post-reply start reference changed.
+        "HEALTH_BOOT",  # Post-reply boot identity changed.
+        "HEALTH_CHILD_EXIT",  # Independent post-reply exit observation.
+    ],
+) -> NoReturn:
+    """Label an existing rejection without retrying or granting authority."""
+    error = HandoffError(
+        "IDENTITY_MISMATCH"
+    )  # Preserve the existing high-level reason.
+    error.identity_checkpoint = checkpoint  # Keep raw local references out of errors.
+    error.add_note("IDENTITY_CHECKPOINT=" + checkpoint)  # Visible in pytest failures.
+    raise error  # The existing caller still owns cleanup and independent exit checks.
 
 
 def _boot() -> str:
@@ -151,7 +175,7 @@ def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
     expected = b"\0".join(os.fsencode(arg) for arg in expected_command) + b"\0"
     if len(command) > QUERY_BYTES or command != expected:
         # Matching start ticks do not attest code.
-        raise HandoffError("IDENTITY_MISMATCH")
+        _identity_mismatch("COMMAND_SNAPSHOT")  # Label this single bounded observation.
     return ticks  # The caller brackets the fixture report with this local witness.
 
 
@@ -591,18 +615,18 @@ def run_case(
             # This assertion alone did not satisfy the kernel gate.
             "original_closed": True,
         }
-        # Matching values must also have exact expected types.
-        if (
-            before != after
-            or any(
-                type(report[key]) is not type(value) or report[key] != value
-                for key, value in expected.items()
-            )
-            or _boot() != initial_boot
-            or _child_exited(pidfd)
+        # Preserve the original short-circuit order while identifying each rejection.
+        if before != after:  # Start references must match before report comparisons.
+            _identity_mismatch("REPORT_START_REFERENCE")  # No new observation or retry.
+        if any(  # Matching report values must also have the exact expected types.
+            type(report[key]) is not type(value) or report[key] != value
+            for key, value in expected.items()
         ):
-            # Neither report fields nor PID alone suffice.
-            raise HandoffError("IDENTITY_MISMATCH")
+            _identity_mismatch("REPORT_FIELDS")  # Never include actual field values.
+        if _boot() != initial_boot:  # Retain the same independent boot query and order.
+            _identity_mismatch("REPORT_BOOT")  # A changed boundary still stops startup.
+        if _child_exited(pidfd):  # Preserve the existing retained-generation exit gate.
+            _identity_mismatch("REPORT_CHILD_EXIT")  # A report cannot revive the child.
         # All observations must remain inside the original startup allowance.
         _before(deadline)
         lifetime = Lifetime(  # These container-shaped IDs are synthetic placeholders.
@@ -617,14 +641,25 @@ def run_case(
         _health_exchange(
             parent, pidfd, lifetime, deadline
         )  # One bounded exchange only.
-        if (  # Recheck point identity after the reply without claiming continuity.
+        # Keep the existing post-reply checks in their original short-circuit order.
+        if (
             _inspect(process.pid, command) != before
-            or _boot() != initial_boot
-            or _child_exited(pidfd)
-        ):
-            raise HandoffError(
-                "IDENTITY_MISMATCH"
-            )  # A reply cannot bypass identity gates.
+        ):  # A reply cannot override identity.
+            _identity_mismatch(
+                "HEALTH_START_REFERENCE"
+            )  # No continuity claim is added.
+        if (
+            _boot() != initial_boot
+        ):  # Perform only the existing bounded boot observation.
+            _identity_mismatch(
+                "HEALTH_BOOT"
+            )  # Do not refresh or replace the reference.
+        if _child_exited(
+            pidfd
+        ):  # Exit is still independently checked before dispatching exit.
+            _identity_mismatch(
+                "HEALTH_CHILD_EXIT"
+            )  # A reply supplies no execution authority.
         parent.send(
             b"exit"
         )  # Reuse all-or-error bounded send; no partial-send fallback.
@@ -785,6 +820,14 @@ if __name__ == "__main__":  # Importing the harness never launches a child.
         main()  # The explicit opt-in path is the only command entrypoint.
     # Preserve cleanup uncertainty without printing a traceback.
     except HandoffError as error:
-        _emit({"failure": str(error), "cleanup_complete": error.cleanup_complete})
+        failure_record: dict[str, object] = {  # Keep existing failure fields unchanged.
+            "failure": str(error),  # Preserve the existing high-level reason.
+            "cleanup_complete": error.cleanup_complete,  # Never hide uncertainty.
+        }
+        # Only identity failures gain a label.
+        if error.identity_checkpoint is not None:
+            failure_record["identity_checkpoint"] = error.identity_checkpoint
+        # Emit fixed diagnostics, never raw identity observations.
+        _emit(failure_record)
         # A failed proof must fail the calling acceptance gate.
         raise SystemExit(1) from None

@@ -311,8 +311,13 @@ def test_mismatched_report_never_passes(module, launches, monkeypatch, field, va
 
     # Leave all other launch behavior unchanged.
     monkeypatch.setattr(module, "_report", changed)
-    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH"):
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
         module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    # Fixed field gate label.
+    assert failure.value.identity_checkpoint == "REPORT_FIELDS"
+    assert failure.value.__notes__ == [  # No rejected field values enter diagnostics.
+        "IDENTITY_CHECKPOINT=REPORT_FIELDS"
+    ]
     assert_reaped(launches)  # Invalid evidence cannot skip cleanup.
 
 
@@ -371,8 +376,11 @@ def test_changed_boot_invalidates_existing_attempt(module, launches, monkeypatch
     monkeypatch.setattr(
         module, "_boot", lambda: next(observations)
     )  # Change one trusted reference.
-    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH"):
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
         module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert failure.value.identity_checkpoint == "REPORT_BOOT"  # Fixed boot-stage label.
+    # Never expose either boot identity in an error.
+    assert failure.value.__notes__ == ["IDENTITY_CHECKPOINT=REPORT_BOOT"]
     assert_reaped(
         launches
     )  # Even failed identity evidence must retain exact child ownership.
@@ -721,3 +729,90 @@ def test_peer_loss_during_health_exchange_stops(module, launches):
     )  # Both paths require confirmed cleanup.
     assert len(launches) == 1  # Peer loss cannot silently restart the attempt.
     assert_reaped(launches)  # Independently confirm the exact child was reaped.
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        "COMMAND_SNAPSHOT",  # The bounded kernel command observation disagrees.
+        "REPORT_START_REFERENCE",  # The bracketing process-start references disagree.
+        "REPORT_CHILD_EXIT",  # Independent exit observation rejects the report stage.
+        "HEALTH_START_REFERENCE",  # Identity changes after the valid synthetic reply.
+        "HEALTH_BOOT",  # The post-reply boot observation changes.
+        "HEALTH_CHILD_EXIT",  # Exit is observed after the accepted reply.
+    ],
+)
+def test_identity_checkpoint_rejects_and_reaps(
+    module, launches, monkeypatch, checkpoint
+):
+    """Identify an injected checkpoint without accepting its failure or retrying it."""
+    inspect = module._inspect  # Preserve actual retained-child kernel inspection.
+    report = module._report  # Keep actual packet receipt before report-stage faults.
+    exchange = module._health_exchange  # Complete the real reply before later faults.
+    boot = module._boot  # Preserve actual boot observations except the selected fault.
+    exited = module._child_exited  # Keep real exit evidence outside the injected gate.
+    # Track boundaries, not scheduling delays.
+    phase = {"report": False, "health": False}
+    before = len(os.listdir("/proc/self/fd"))  # Independent resource baseline.
+
+    def receive_report(*args):
+        value = report(*args)  # Do not substitute synthetic report success.
+        phase["report"] = True  # The next identity bracket belongs to the report gate.
+        return value  # Let all normal kernel and report checks still run.
+
+    def health(*args):
+        # First accept a real timely response through the real transport.
+        exchange(*args)
+        phase["health"] = True  # Only later observations receive post-reply faults.
+
+    def observe(pid, command):
+        if checkpoint == "COMMAND_SNAPSHOT":  # Fault expected comparison, not launch.
+            # Real kernel bytes must reject.
+            return inspect(pid, (*command, "unexpected"))
+        ticks = inspect(pid, command)  # Read the actual owned child before injection.
+        if checkpoint == "REPORT_START_REFERENCE" and phase["report"]:
+            return ticks + 1  # Model a changed independently observed start reference.
+        if checkpoint == "HEALTH_START_REFERENCE" and phase["health"]:
+            return ticks + 1  # Do not change the fixture's actual process or reply.
+        return ticks  # Leave unselected checkpoints unchanged.
+
+    def observe_boot():
+        value = boot()  # Obtain the normal host reference first.
+        if checkpoint == "HEALTH_BOOT" and phase["health"]:
+            return "0" * 36  # A deliberately different observation, never new trust.
+        return value  # Preserve startup and report-stage source context.
+
+    def observe_exit(pidfd):
+        if checkpoint == "REPORT_CHILD_EXIT" and phase["report"]:
+            return True  # Model exit at the report gate while retaining real cleanup.
+        if checkpoint == "HEALTH_CHILD_EXIT" and phase["health"]:
+            return True  # A previously valid reply must not bypass this rejection.
+        # Preserve earlier actual retained-generation observations.
+        return exited(pidfd)
+
+    # Mark the real report boundary.
+    monkeypatch.setattr(module, "_report", receive_report)
+    # Mark the real reply boundary.
+    monkeypatch.setattr(module, "_health_exchange", health)
+    # Inject only selected identity data.
+    monkeypatch.setattr(module, "_inspect", observe)
+    # Change only the selected boot gate.
+    monkeypatch.setattr(module, "_boot", observe_boot)
+    # Preserve real cleanup APIs.
+    monkeypatch.setattr(module, "_child_exited", observe_exit)
+    with pytest.raises(module.HandoffError, match="IDENTITY_MISMATCH") as failure:
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert str(failure.value) == "IDENTITY_MISMATCH"  # Preserve the high-level reason.
+    assert failure.value.identity_checkpoint == checkpoint  # Identify the actual gate.
+    # No earlier fault advances.
+    assert phase["health"] is checkpoint.startswith("HEALTH_")
+    assert failure.value.__notes__ == [  # Notes contain only a fixed public-safe label.
+        "IDENTITY_CHECKPOINT=" + checkpoint
+    ]
+    # No diagnosis substitutes for cleanup.
+    assert failure.value.cleanup_complete is True
+    # Diagnostic labeling cannot create retries or new children.
+    assert len(launches) == 1
+    assert_reaped(launches)  # Independently establish the owned child's final state.
+    # Reject without descriptor leaks.
+    assert len(os.listdir("/proc/self/fd")) == before

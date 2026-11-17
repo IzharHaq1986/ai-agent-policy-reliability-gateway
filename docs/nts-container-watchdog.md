@@ -723,3 +723,46 @@ of future cleanup capability, continuous process integrity, authenticated NTS,
 measurement freshness, or acceptable clock uncertainty. Real watchdog integration,
 independent supervision, source-trust evidence, and live NTS collection remain
 open. Measurement age remains unknown and approval eligibility remains blocked.
+
+### Identity rejection checkpoints
+
+An `IDENTITY_MISMATCH` still stops the synthetic attempt. Its exception now carries
+one fixed checkpoint label in `identity_checkpoint` and an
+`IDENTITY_CHECKPOINT=...` exception note. Pytest displays the note when showing the
+exception or a failed expected-error comparison. The opt-in CLI adds
+`identity_checkpoint` to an identity-failure record; other error records retain
+their existing fields. No raw command arguments, process references, boot IDs,
+report values, or environment contents are added to these diagnostics.
+
+| Checkpoint | Existing rejection site to inspect |
+| --- | --- |
+| `COMMAND_SNAPSHOT` | The bounded kernel command bytes disagree with the expected fixed argv or exceed the read limit |
+| `REPORT_START_REFERENCE` | The independent process-start observations around the fixture report disagree |
+| `REPORT_FIELDS` | A required report value or its exact type disagrees with the expected context |
+| `REPORT_BOOT` | The boot observation at the report gate differs from the initial reference |
+| `REPORT_CHILD_EXIT` | The retained child is observed exited at the report gate |
+| `HEALTH_START_REFERENCE` | The post-reply process-start observation differs from the initial reference |
+| `HEALTH_BOOT` | The post-reply boot observation differs from the initial reference |
+| `HEALTH_CHILD_EXIT` | The retained child is observed exited after the reply |
+
+The checks retain their original short-circuit order and observations. Labeling
+adds no identity retry, extra query, wait allowance, permissive comparison,
+replacement launch, or recovery action. Existing high-level failure reasons,
+packet checks, deadlines, and independent cleanup requirements remain in place.
+Unavailable observations and other non-identity errors keep their existing
+handling. Unverified cleanup still overrides an otherwise useful result.
+
+For independent verification, run `tests/test_nts_child_handoff.py`. The real-child
+fault tests cover all eight labels, preserve the high-level error reason, inspect
+the fixed exception note, and independently check child reaping. The additional
+checkpoint cases also verify one launch and descriptor-count restoration. They
+mark report and reply boundaries rather than depending on scheduling delays.
+
+A checkpoint identifies where rejection occurred, not why the observation
+changed or whether it was a race, unavailable evidence, interference, or a
+fixture defect. Preserve the original failing receipt and source identity. Use
+the label to inspect the corresponding observation and its caller before making
+a correction. Do not broaden accepted errors or retry into acceptance. A later
+passing run alone does not establish that an unexplained earlier failure was
+fixed. Live NTS collection remains unstarted; measurement age remains unknown
+and approval eligibility remains blocked.
