@@ -1,7 +1,7 @@
 """Fixed harmless child using checked transport adoption; never a watchdog."""
 
 import errno  # Distinguish an absent excluded descriptor from unavailable evidence.
-import json  # Send a bounded fixture report, not a health or approval message.
+import json  # Encode the bounded fixture report and deliberate bad health replies.
 import math  # Reject invalid or unbounded synthetic startup deadlines.
 import os  # Close only the raw inherited original owned by this child.
 import select  # Wait within the original budget without spinning on an empty queue.
@@ -15,9 +15,9 @@ class FixtureReleaseError(RuntimeError):
 
 
 def main() -> int:
-    """Adopt a checked copy, close the original, report, and await one exit packet."""
+    """Adopt, release the original, report, answer one challenge, and exit."""
     if (
-        len(sys.argv) != 11
+        len(sys.argv) != 13
     ):  # Old or malformed argument layouts cannot run this fixture.
         return 2  # Do not reinterpret additional fields as commands or import paths.
     # Isolated Python deliberately excludes the script directory from imports.
@@ -28,6 +28,9 @@ def main() -> int:
     try:  # No argument or environment variable can select either module's location.
         from nts_health_protocol import (
             PACKET_BYTES,
+            HealthError,  # Malformed or mismatched challenges cannot pass.
+            Lifetime,  # Build fixed expected context independently of the challenge.
+            respond,  # Reuse the reviewed response construction and validation.
         )  # Reuse the existing packet ceiling.
 
         # Use the actual checked transport operations.
@@ -55,6 +58,7 @@ def main() -> int:
     device, inode, buffer_bytes, ceiling = map(
         int, sys.argv[7:11]
     )  # Trusted launch context.
+    expected_boot, collection_id = sys.argv[11:13]  # Parent-owned fixed launch context.
     if (  # Reject malformed context before treating any descriptor as owned input.
         mode
         not in {
@@ -63,6 +67,13 @@ def main() -> int:
             "stall",
             "source_close_failure",
             "retain_original",
+            "health_close",  # Exit after the challenge without providing an answer.
+            "health_lifetime",  # A reply with another lifetime cannot pass.
+            "health_generation",  # A future generation timestamp must fail.
+            "health_malformed",  # Emit a deliberately malformed response for tests.
+            "health_mismatch",  # Emit a response with the wrong challenge token.
+            "health_silent",  # Consume the challenge without answering it.
+            "health_duplicate",  # Queue a forbidden extra response for tests.
         }
         or expected_size != PACKET_BYTES  # No packet-limit override is accepted.
         or not math.isfinite(deadline)  # Never wait on an infinite or NaN deadline.
@@ -128,16 +139,18 @@ def main() -> int:
         owned_fd = (
             endpoint._owned().fileno()
         )  # Narrow synthetic inspection, not a handoff API.
-        if mode in {"normal", "retain_original"}:  # A stalled fixture emits no report.
-            with Path("/proc/self/stat").open(
-                "rb"
-            ) as source:  # Observe this child's lifetime.
-                raw = source.read(4097)  # Detect overflow before parsing kernel data.
-            if len(raw) > 4096:  # Do not parse shortened or unbounded evidence.
-                return 4  # Missing lifetime evidence prevents a passing report.
-            ticks = int(
-                raw.rsplit(b") ", 1)[1].split()[19]
-            )  # Kernel field 22 is start time.
+        with Path("/proc/self/stat").open(
+            "rb"
+        ) as source:  # Observe this child's lifetime.
+            raw = source.read(4097)  # Detect overflow before parsing kernel data.
+        if len(raw) > 4096:  # Do not parse shortened or unbounded evidence.
+            return 4  # Missing lifetime evidence prevents a passing report.
+        ticks = int(
+            raw.rsplit(b") ", 1)[1].split()[19]
+        )  # Kernel field 22 is start time.
+        if mode in {"normal", "retain_original"} or mode.startswith(
+            "health_"
+        ):  # A stalled fixture emits no report.
             message = json.dumps(
                 {  # This versioned fixture report is not a health reply.
                     # Distinguish checked-copy ownership from the earlier raw proof.
@@ -161,6 +174,23 @@ def main() -> int:
             endpoint.send(
                 message
             )  # Reuse whole-packet limits and explicit transport failures.
+        health_answered = (
+            False  # This fixture accepts exactly one challenge before exit.
+        )
+        # Do not derive expected lifetime fields from a wire packet.
+        lifetime = Lifetime(
+            # Parent launch context, not self-reported authority.
+            boot_id=expected_boot,
+            collection_id=collection_id,  # Parent-generated identity for this attempt.
+            # Explicit synthetic placeholder; there is no container.
+            container_id="0" * 64,
+            owner="0" * 32,  # Explicit synthetic placeholder; no ownership attestation.
+            watchdog_pid=os.getpid(),  # The fixed child checks its own actual process.
+            watchdog_start_ticks=ticks,  # Actual reference, also in stalled tests.
+            deadline_ns=int(
+                deadline * 1_000_000_000
+            ),  # Preserve the original boundary.
+        )
         poller = select.poll()  # Wait for input instead of repeatedly retrying receive.
         poller.register(
             owned_fd, select.POLLIN | select.POLLHUP
@@ -188,9 +218,61 @@ def main() -> int:
             ):  # Temporary unavailability does not create a fresh budget.
                 # The next iteration waits for readiness rather than busy-spinning.
                 continue
+            if mode == "health_close":  # Deliberate peer loss during the exchange.
+                return 4  # Normal resource cleanup still runs before child exit.
+            if not health_answered:  # Exit is allowed only after one valid challenge.
+                response = respond(
+                    packet, lifetime, time.monotonic_ns()
+                )  # Fixed protocol.
+                health_answered = (
+                    True  # Never turn a later packet into another challenge.
+                )
+                if mode == "health_silent":  # Keep the process alive for timeout proof.
+                    continue  # The original lifetime still expires without a reply.
+                if mode == "health_malformed":  # Deliberately invalid packet fixture.
+                    response = b"{}"  # The parent must reject rather than repair it.
+                if mode == "health_mismatch":  # Keep valid syntax but change binding.
+                    changed = json.loads(
+                        response
+                    )  # Bounded locally generated fixture data.
+                    changed["token"] = (
+                        "0" * 64 if changed["token"] != "0" * 64 else "1" * 64
+                    )
+                    response = json.dumps(changed).encode(
+                        "ascii"
+                    )  # Still within packet bound.
+                if mode in {
+                    "health_lifetime",
+                    "health_generation",
+                }:  # Fixed faults only.
+                    changed = json.loads(response)  # Modify bounded local fixture data.
+                    if (
+                        mode == "health_lifetime"
+                    ):  # Keep syntax valid but break identity.
+                        changed["watchdog_start_ticks"] += (
+                            1  # Not the trusted generation.
+                        )
+                    else:  # A future time cannot be accepted as a recent generation.
+                        changed["generated_ns"] = (
+                            lifetime.deadline_ns + 1
+                        )  # Beyond expiry.
+                    response = json.dumps(changed).encode(
+                        "ascii"
+                    )  # Whole bounded packet.
+                endpoint.send(
+                    response
+                )  # One all-or-error send, without an automatic retry.
+                if (
+                    mode == "health_duplicate"
+                ):  # Exercise rejection of residual replies.
+                    endpoint.send(
+                        response
+                    )  # Deliberate negative fixture, never a retry.
+                # Await only the fixed exit instruction under the same deadline.
+                continue
             return (
                 0 if packet == b"exit" else 4
-            )  # Only the fixed harmless instruction is allowed.
+            )  # No arbitrary command or second exchange.
         return 5  # A timeout can never be reported as completed fixture work.
     except (
         TransportError
@@ -199,6 +281,7 @@ def main() -> int:
             raise FixtureReleaseError("DUPLICATE_RELEASE_UNCONFIRMED") from None
         return 4  # A rejected endpoint cannot produce successful fixture evidence.
     except (
+        HealthError,  # Reject bad challenge syntax, lifetime, or generation timing.
         WouldBlock,
         OSError,
     ):  # Other unavailable setup or single-send failures stop the fixture.

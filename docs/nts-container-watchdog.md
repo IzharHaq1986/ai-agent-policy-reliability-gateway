@@ -654,3 +654,72 @@ measurement age remains unknown, and approval eligibility remains blocked.
 The [Python descriptor documentation](https://docs.python.org/3.12/library/os.html#os.dup)
 and [socket mode documentation](https://docs.python.org/3.12/library/socket.html#notes-on-socket-timeouts)
 define the duplication and shared-mode semantics used here.
+
+### One synthetic child health exchange
+
+The fixed child proof now exercises the existing `Session` / `respond` protocol
+through the checked private transport after the parent validates the adoption
+report and kernel witnesses. This is a synthetic communication check, not actual
+watchdog health supervision. The report remains a separate version-2 fixture
+message; it cannot itself satisfy a health challenge.
+
+Before launch the parent creates a fresh collection UUID and captures the boot
+identity. Those two fixed context fields follow the existing adoption arguments
+in the reviewed child's argv. The parent constructs the expected protocol lifetime
+from its retained child PID, independently inspected start ticks, and original
+monotonic deadline. The child constructs its matching lifetime from fixed launch
+context and its own process references, not from the challenge's claimed identity.
+All-zero container and owner references are explicit synthetic placeholders;
+there is no container or real watchdog represented by this exchange. This is not
+a general bootstrap-delivery API. No challenge token is supplied through argv or
+written to the proof receipt.
+
+The parent issues exactly one unpredictable 256-bit challenge. The explicit
+synthetic response and generation-age limits are both one second. These test
+settings are not production defaults or NTP freshness thresholds. The receive
+wait ends at the earlier of the response deadline and the original startup
+deadline. An empty receive returns to bounded readiness waiting; a blocked send
+fails without resend, another token, another child, or an extended budget.
+Protocol rejection and observed peer loss also fail the attempt and enter the
+existing bounded owned-child cleanup path.
+
+The child answers only one challenge and then accepts only the fixed exit
+instruction. The parent accepts a response only for its outstanding token,
+sequence, expected lifetime, and protocol timing bounds. It rechecks point
+process and boot identity before requesting exit. Extra queued replies invalidate
+the existing after-exit closure proof; they cannot silently become evidence for a
+second exchange. Both the normal handoff and retained-parent-copy cases still
+require independently observed child exit, original-descriptor absence, closure
+behavior, and confirmed resource cleanup. The successful receipt adds
+`synthetic_health_exchange_accepted: true`, while retaining unknown measurement
+age and blocked approval eligibility.
+
+Run the existing opt-in proof and focused tests from the reviewed checkout:
+
+```bash
+python tests/support/run_nts_child_handoff_acceptance.py --accept 5 2
+python -m pytest -q tests/test_nts_child_handoff.py
+```
+
+Inspect the parent `_health_exchange` function for challenge ownership and the
+unchanged-budget wait. Inspect the fixed child's one-challenge branch for reply
+construction and exit restrictions. Focused real-child tests inject malformed,
+wrong-token, wrong-lifetime, future-generation, missing, duplicate, and closed-peer
+responses. Parent-side tests exercise late acceptance, replay rejection, send
+backpressure, and a temporary receive race. They retain actual child handles and
+independently verify reaping; rejection is not itself proof of resource cleanup.
+
+For `HEALTH_EXCHANGE_REJECTED`, compare protocol fields against parent-owned
+context and inspect `Session.accept`; do not repair or accept the rejected reply.
+For `HEALTH_RESPONSE_EXPIRED`, inspect elapsed time and scheduling against the
+original bounds; do not reset the deadline. For transport or peer-exit failures,
+inspect the endpoint operation and retained pidfd evidence. For unexpected packets
+after exit, inspect whether the child emitted more than one response. Correct the
+first observed divergence without weakening the identity, packet, deadline, or
+cleanup checks. No fault permits a replacement child within the failed attempt.
+
+A timely synthetic reply is neither per-message sender authentication nor proof
+of future cleanup capability, continuous process integrity, authenticated NTS,
+measurement freshness, or acceptable clock uncertainty. Real watchdog integration,
+independent supervision, source-trust evidence, and live NTS collection remain
+open. Measurement age remains unknown and approval eligibility remains blocked.

@@ -64,6 +64,7 @@ def test_real_handoff_and_independent_exit(module, launches, duplicate):
     )  # Keep the checked locator's exact type.
     # Compare the two actual socket cases.
     assert result["closure_hidden_by_duplicate"] is duplicate
+    assert result["synthetic_health_exchange_accepted"] is True  # Real bounded reply.
     # This proof is not time freshness evidence.
     assert result["measurement_age"] == "unknown"
     # No synthetic observation grants authority.
@@ -592,3 +593,131 @@ def test_closed_channel_reconciliation_keeps_original_deadline(module, monkeypat
         assert [limit for _, limit in calls] == [123.0, 123.0]
     finally:  # Releasing an already rejected owned endpoint is idempotent.
         parent.close()  # Close only the test's owned transport reference.
+
+
+@pytest.mark.parametrize(
+    "mode,reason",
+    [
+        ("health_malformed", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_mismatch", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_lifetime", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_generation", "HEALTH_EXCHANGE_REJECTED"),
+        ("health_silent", "HEALTH_RESPONSE_EXPIRED"),
+        ("health_duplicate", "UNEXPECTED_PACKET_AFTER_EXIT"),
+    ],
+)
+def test_real_health_failure_stops_and_reaps(module, launches, mode, reason):
+    """Reject bad or missing replies across the actual child boundary."""
+    before = len(os.listdir("/proc/self/fd"))  # Independently count owned descriptors.
+    with pytest.raises(module.HandoffError, match=reason) as failure:
+        module.run_case(  # Launch only the fixed reviewed negative fixture.
+            duplicate=False, startup_seconds=5, cleanup_seconds=2, _mode=mode
+        )
+    assert failure.value.cleanup_complete is True  # Rejection still requires cleanup.
+    assert len(launches) == 1  # Never replace the failed child automatically.
+    assert_reaped(
+        launches
+    )  # Verify actual reaping rather than accepting a signal result.
+    assert (
+        len(os.listdir("/proc/self/fd")) == before
+    )  # Failure must not leak endpoints.
+
+
+def test_health_send_backpressure_is_not_retried(module, launches, monkeypatch):
+    """A full challenge queue cannot create another token, send, or child."""
+    original = (
+        module.Endpoint.send
+    )  # Keep real fixture-report and exit behavior available.
+    challenges = []  # Count actual parent challenge send attempts only.
+
+    def send(endpoint, packet):
+        if b'"kind":"challenge"' in packet:  # Match the protocol's canonical encoding.
+            challenges.append(packet)  # Record the attempted complete packet.
+            raise module.WouldBlock()  # Model immediate nonblocking backpressure.
+        return original(
+            endpoint, packet
+        )  # Do not alter unrelated transport operations.
+
+    monkeypatch.setattr(module.Endpoint, "send", send)  # Inject only the parent fault.
+    with pytest.raises(module.HandoffError, match="TRANSPORT_WOULD_BLOCK"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert len(challenges) == 1  # No resend or replacement challenge is permitted.
+    assert len(launches) == 1  # Queue failure cannot launch a second child.
+    assert_reaped(launches)  # Independently check cleanup of the original child.
+
+
+def test_health_receive_race_preserves_one_challenge(module, launches, monkeypatch):
+    """Temporary receive unavailability returns to waiting without a new exchange."""
+    original = module.Endpoint.receive  # Preserve real packet delivery after one race.
+    calls = []  # Count parent receives: report, injected race, then actual reply.
+
+    def receive(endpoint):
+        calls.append(endpoint)  # Track only this parent's receive operations.
+        if len(calls) == 2:  # Leave the queued health response untouched on this call.
+            # Model readiness followed by temporary no progress.
+            raise module.WouldBlock()
+        return original(endpoint)  # The next bounded wait can receive the same reply.
+
+    monkeypatch.setattr(module.Endpoint, "receive", receive)  # Child remains unchanged.
+    result = module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert (
+        result["synthetic_health_exchange_accepted"] is True
+    )  # Actual reply validated.
+    assert len(launches) == 1  # A read race must not cause relaunch.
+    assert_reaped(launches)  # Preserve independent exit and cleanup evidence.
+
+
+def test_late_health_reply_cannot_pass(module, launches, monkeypatch):
+    """A real valid reply fails when its acceptance timestamp exceeds the budget."""
+    original = module.Session.accept  # Keep the actual protocol validation in use.
+
+    def accept(session, packet, received_ns):
+        return original(  # Model scheduling delay after delivery without sleeping.
+            session, packet, received_ns + 2 * module._HEALTH_TIMEOUT_NS
+        )
+
+    monkeypatch.setattr(
+        module.Session, "accept", accept
+    )  # Affect only parent acceptance.
+    with pytest.raises(module.HandoffError, match="HEALTH_EXCHANGE_REJECTED"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert len(launches) == 1  # A late response cannot reopen the attempt.
+    assert_reaped(launches)  # The failure still releases the retained child.
+
+
+def test_replayed_health_reply_cannot_pass(module, launches, monkeypatch):
+    """The same real response cannot satisfy a second acceptance on its session."""
+    original = module.Session.accept  # Reuse the real outstanding-challenge state.
+
+    def accept(session, packet, received_ns):
+        original(session, packet, received_ns)  # Consume the one legitimate reply.
+        original(
+            session, packet, received_ns
+        )  # Replay must latch failure, not succeed.
+
+    monkeypatch.setattr(
+        module.Session, "accept", accept
+    )  # Inject replay at validation.
+    with pytest.raises(module.HandoffError, match="HEALTH_EXCHANGE_REJECTED"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert len(launches) == 1  # No fresh child or exchange repairs a failed session.
+    assert_reaped(
+        launches
+    )  # Independently confirm the unsuccessful attempt was cleaned.
+
+
+def test_peer_loss_during_health_exchange_stops(module, launches):
+    """Peer closure never substitutes for a matching reply or verified cleanup."""
+    with pytest.raises(module.HandoffError) as failure:
+        module.run_case(  # Fixed fixture exits after receiving its challenge.
+            duplicate=False, startup_seconds=5, cleanup_seconds=2, _mode="health_close"
+        )
+    assert str(failure.value) in {  # Kernel socket-close and exit status may race.
+        "HEALTH_CHILD_EXITED",  # The independent pidfd observed exit first.
+        "TRANSPORT_FAILED",  # Socket closure became visible before pidfd exit.
+    }
+    assert (
+        failure.value.cleanup_complete is True
+    )  # Both paths require confirmed cleanup.
+    assert len(launches) == 1  # Peer loss cannot silently restart the attempt.
+    assert_reaped(launches)  # Independently confirm the exact child was reaped.
