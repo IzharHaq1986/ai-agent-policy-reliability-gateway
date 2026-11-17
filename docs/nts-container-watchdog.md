@@ -265,8 +265,9 @@ measurement age remains unknown and approval eligibility blocked.
 `tests/support/nts_health_transport.py` adds a Linux-only transport building
 block. `create_pair` returns two owned, unnamed Unix sequenced-packet endpoints,
 created with nonblocking and close-on-exec flags and verified before return.
-There is no listener, filesystem socket path, network port, external socket
-adoption, or descriptor-handoff API. The existing watchdog does not use it.
+There is no listener, filesystem socket path, network port, or process-handoff
+API. Checked adoption is restricted to trusted bootstrap code as described
+below; the existing watchdog does not use it.
 
 Trusted code supplies `buffer_bytes` and `effective_buffer_limit` explicitly.
 Requests range from 4 KiB to 1 MiB; the accepted ceiling must be at least twice
@@ -493,8 +494,8 @@ not an allowed readiness configuration. These observations prove why socket
 closure cannot replace independent child-lifetime monitoring.
 
 The fixed fixture uses raw local sockets and the existing packet ceiling. It
-does not add endpoint adoption to the existing transport, and its inheritance
-report is separate from the health protocol. The fixture cannot
+does not use checked transport adoption; its inheritance report remains
+separate from the health protocol. The fixture cannot
 execute supplied commands. The parent inspects only its retained direct child;
 it never follows a PID asserted in a packet. Explicit default SIGCHLD behavior,
 single Python-thread ownership, no competing/native reaper, reviewed unchanged
@@ -545,3 +546,78 @@ identity, or actual watchdog readiness. Watchdog bootstrap, transport handoff,
 health-loop integration, independent supervision, and live failure proofs remain
 open. Live NTS collection remains unstarted; measurement age remains unknown and
 approval eligibility remains blocked.
+
+### Checked inherited-endpoint adoption
+
+`nts_health_transport.adopt_inherited` adds an internal trusted-bootstrap
+operation to the existing transport. It receives a borrowed descriptor, expected
+kernel device/inode identity, and explicit existing buffer bounds. Expected
+identity must come from trusted launch evidence; obtaining matching numbers from
+an untrusted reply would not establish provenance. This slice performs no child
+launch, bootstrap-message exchange, or actual watchdog integration.
+
+Adoption duplicates the borrowed descriptor, then validates and owns only that
+copy. It rejects non-sockets, wrong identities, unsupported socket families or
+types, named or unconnected endpoints, blocking kernel mode, and existing buffer
+readbacks outside the accepted bounds. A zero-time poll rejects observed peer
+closure or errors without consuming queued data. It does not wait for readiness,
+retry, resize buffers, or repair a blocking source. This is a point observation,
+not a guarantee that the peer will remain present.
+
+The duplicate's close-on-exec flag is set and verified independently of the
+borrowed original's flag. Actual kernel nonblocking mode is checked before
+wrapping; Python wrapper timeout bookkeeping is normalized to nonblocking only
+after that check. Under the single-owner assumption, the shared kernel mode was
+already correct and remains unchanged. This distinction matters because socket
+duplicates share socket state even though their close ownership and exec flags
+are separate. Creation and adoption reuse the same resource-bound checks.
+
+Success returns an owned Endpoint using the existing packet limits, ancillary
+rejection, backpressure handling, and close behavior. It leaves the borrowed
+original open on both success and failure. The trusted caller must close its
+original copy after successful adoption, before further fork/exec, handoff, or
+readiness. Leaving that copy open can hide closure, as the preceding synthetic
+proof demonstrates. An adoption result is not confirmation that the caller's
+remaining descriptors were closed.
+
+Failure closes only the acquired duplicate. Fixed errors distinguish invalid
+references, unsafe bootstrap context, rejected observations, unavailable kernel
+evidence, and unverified cleanup. An uncertain close is not retried. The
+cleanup_complete field concerns only resources owned by adoption; it says
+nothing about release of the caller's borrowed descriptor or other bootstrap
+resources. Interrupted validation also releases the acquired copy.
+
+This operation requires a controlled single-owner bootstrap with no concurrent
+close/reuse, socket mutation, or descriptor transfer. It rejects multiple active
+Python threads, but that check cannot exclude native threads, external same-user
+interference, or privileged actors. These remain explicit trust assumptions,
+not security properties inferred from an inode or descriptor number. Existing
+creation/send/receive interfaces and watchdog behavior remain unchanged.
+
+Focused transport tests use actual local descriptors and fault injection. They
+check identity/type/name/mode/buffer rejection, closure and queued-data
+preservation, duplicate/wrapper failures, and uncertain cleanup. They verify
+that rejection preserves the source, that closing an adopted copy preserves the
+source, and that an accepted copy still works after the original is closed.
+The native unconnected-socket test requires permission to create a standalone
+Unix packet socket. A sandbox that denies that setup cannot supply that test's
+acceptance evidence; CI and Hetzner must still run it successfully. No skip or
+weaker assertion replaces that gate.
+
+For independent checks, inspect the adoption function and its matching tests in
+`tests/test_nts_health_transport.py`. Compare the borrowed source's fstat identity,
+kernel blocking flag, exec flag, and buffer readbacks before and after the call.
+For unavailable evidence, inspect the reported operation and host permissions;
+for cleanup uncertainty, reconcile only the owned copy without closing or
+retrying the borrowed descriptor. Correct the cause rather than disabling the
+identity, type, or resource checks.
+
+The existing synthetic child proof still uses raw sockets. Adopting an endpoint
+inside that child, delivering trusted bootstrap context, verifying sender origin,
+and integrating watchdog health supervision remain separate work. Adoption
+alone supplies no execution authority. Live collection remains unstarted,
+measurement age remains unknown, and approval eligibility remains blocked.
+
+The [Python descriptor documentation](https://docs.python.org/3.12/library/os.html#os.dup)
+and [socket mode documentation](https://docs.python.org/3.12/library/socket.html#notes-on-socket-timeouts)
+define the duplication and shared-mode semantics used here.
