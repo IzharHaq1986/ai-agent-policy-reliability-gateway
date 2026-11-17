@@ -147,8 +147,8 @@ def _preflight(startup_seconds: float, cleanup_seconds: float) -> None:
         raise HandoffError("UNSAFE_CHILD_OWNERSHIP")
 
 
-def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
-    """Read a bounded local lifetime witness, never a child-asserted identity."""
+def _start_reference(pid: int) -> int:
+    """Read the owned process start reference without assuming command publication."""
     root = Path("/proc") / str(pid)  # PID comes only from our retained Popen handle.
     # Read kernel lifetime data independently.
     with (root / "stat").open("rb") as source:
@@ -167,6 +167,13 @@ def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
         b"x",
     }:
         raise HandoffError("CHILD_EXITED")  # An existing PID alone is not sufficient.
+    return ticks  # This witness alone cannot validate the command or grant authority.
+
+
+def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
+    """Require a live process witness and an exact bounded command snapshot."""
+    ticks = _start_reference(pid)  # Reuse the same independent bounded lifetime check.
+    root = Path("/proc") / str(pid)  # Only the retained child owner supplies this PID.
     # Verify the fixed profile at this observation.
     with (root / "cmdline").open("rb") as source:
         # Bound inspection even for unexpected processes.
@@ -176,7 +183,7 @@ def _inspect(pid: int, expected_command: tuple[str, ...]) -> int:
     if len(command) > QUERY_BYTES or command != expected:
         # Matching start ticks do not attest code.
         _identity_mismatch("COMMAND_SNAPSHOT")  # Label this single bounded observation.
-    return ticks  # The caller brackets the fixture report with this local witness.
+    return ticks  # This full profile must match the earlier independent start witness.
 
 
 def _endpoint_witness(
@@ -582,10 +589,15 @@ def run_case(
             child = None  # Do not close or reuse the released descriptor number again.
         # A blocking launch or late pidfd acquisition cannot pass startup.
         _before(deadline)
-        # Observe identity independently before the report.
-        before = _inspect(process.pid, command)
-        # Wait for bounded inheritance evidence.
+        # Capture lifetime before the report without assuming command publication.
+        before = _start_reference(process.pid)  # PID comes from the retained child.
+        # This bounded packet indicates progress, never trusted identity or authority.
         report = _report(parent, pidfd, deadline)
+        _before(deadline)  # Receiving a report cannot extend the original allowance.
+        # First full command check after report.
+        if _inspect(process.pid, command) != before:
+            # Preserve the pre-report witness.
+            _identity_mismatch("REPORT_START_REFERENCE")
         owned_fd = report[
             "owned_fd"
         ]  # Treat this as untrusted input, not identity proof.
@@ -603,7 +615,7 @@ def run_case(
         _original_absent(
             process.pid, child_fd
         )  # Adoption itself left this source copy open.
-        # Bracket the report with a second local witness.
+        # Bracket endpoint observations with a second full post-report command check.
         after = _inspect(process.pid, command)
         expected = {
             # Require the checked-copy fixture report, not the old raw format.
@@ -615,7 +627,7 @@ def run_case(
             # This assertion alone did not satisfy the kernel gate.
             "original_closed": True,
         }
-        # Preserve the original short-circuit order while identifying each rejection.
+        # Require the initial lifetime and both later profile witnesses to agree.
         if before != after:  # Start references must match before report comparisons.
             _identity_mismatch("REPORT_START_REFERENCE")  # No new observation or retry.
         if any(  # Matching report values must also have the exact expected types.

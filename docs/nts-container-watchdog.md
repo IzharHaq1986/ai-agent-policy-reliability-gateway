@@ -745,10 +745,11 @@ report values, or environment contents are added to these diagnostics.
 | `HEALTH_BOOT` | The post-reply boot observation differs from the initial reference |
 | `HEALTH_CHILD_EXIT` | The retained child is observed exited after the reply |
 
-The checks retain their original short-circuit order and observations. Labeling
-adds no identity retry, extra query, wait allowance, permissive comparison,
-replacement launch, or recovery action. Existing high-level failure reasons,
-packet checks, deadlines, and independent cleanup requirements remain in place.
+Checkpoint labeling itself adds no identity retry, query, wait allowance,
+permissive comparison, replacement launch, or recovery action. The startup
+observation ordering below defines when the current lifetime and command checks
+run. Existing high-level failure reasons, packet checks, deadlines, and
+independent cleanup requirements remain in place.
 Unavailable observations and other non-identity errors keep their existing
 handling. Unverified cleanup still overrides an otherwise useful result.
 
@@ -766,3 +767,66 @@ a correction. Do not broaden accepted errors or retry into acceptance. A later
 passing run alone does not establish that an unexplained earlier failure was
 fixed. Live NTS collection remains unstarted; measurement age remains unknown
 and approval eligibility remains blocked.
+
+### Startup observation ordering
+
+The synthetic harness must not infer publication of `/proc/PID/cmdline` merely
+from acquisition of a `Popen` handle. Upstream Linux v6.8's
+[`get_mm_cmdline`](https://github.com/torvalds/linux/blob/v6.8/fs/proc/base.c)
+can return zero while startup has not yet initialized the environment bounds.
+The [`begin_new_exec`](https://github.com/torvalds/linux/blob/v6.8/fs/exec.c)
+path closes close-on-exec descriptors before the ELF loader subsequently
+initializes argument/environment bounds in
+[`create_elf_tables`](https://github.com/torvalds/linux/blob/v6.8/fs/binfmt_elf.c).
+This supports a startup-publication timing explanation; it does not attest the
+precise execution path of a distribution-patched kernel. The correction does
+not infer trust from an empty result or from a later diagnostic reread.
+
+The fixed synthetic sequence now works as follows:
+
+1. Retain the direct child and pidfd, then read a bounded independent process-start
+   reference before the report. Reject inaccessible, invalid, or dead-process
+   evidence. `_start_reference` does not read or validate the command profile.
+2. Receive the existing bounded fixture report under the unchanged original
+   deadline. This is only a bootstrap-progress indication. Its PID, start ticks,
+   descriptor locator, and release assertions remain untrusted.
+3. Recheck the original deadline and perform the first full `_inspect`: read the
+   independent start reference and compare the entire bounded command snapshot
+   exactly against the parent's fixed launch argv. Require agreement with the
+   pre-report start reference before examining the reported endpoint locator.
+4. Perform the existing endpoint and original-descriptor-absence checks. Perform
+   the second full `_inspect` after those observations and require the same
+   pre-report reference. Preserve all report-field, boot, and exit checks.
+5. Only then begin the existing synthetic health exchange. Keep the existing
+   third full command/lifetime inspection, boot check, and exit check after the
+   reply, before sending the fixed exit instruction.
+
+Both full command checks before the challenge remain mandatory; they now bracket
+endpoint observations after the report. The independent start witness still
+brackets report receipt. Each full profile check reuses the same bounded stat
+parser through `_start_reference`. The additional stat observation consumes the
+original startup budget; it creates no new time allowance. No expected identity
+is taken from a report, and no profile comparison is replaced by a child claim.
+
+An empty, oversized, or different command snapshot at any of the three full
+checks still fails immediately as `COMMAND_SNAPSHOT`. There is no retry, sleep,
+replacement child, or loop waiting for a matching identity. Later diagnostic
+observations never turn rejection into acceptance. Missing or invalid reports,
+changed start references, unavailable evidence, and unconfirmed cleanup remain
+blocking failures. This remains a point-observation proof under the existing
+reviewed-code and controlled-host assumptions, not continuous process integrity.
+
+For independent verification, inspect `run_case`, `_start_reference`, and
+`_inspect` in the harness. Focused tests supply an empty command result if queried
+before the real report; successful cases prove that no such query occurs and
+that all three strict command checks remain. They record the start/report/profile/
+endpoint/health order without sleeps. Separate cases inject empty, oversized, and
+different command results into each full check, require no reread or relaunch,
+and independently verify reaping and descriptor restoration. Additional tests
+retain the pre-report lifetime binding and block progression without a valid
+report. To repair a failure, inspect its recorded checkpoint and first divergent
+observation; do not loosen the comparison or extend the deadline.
+
+The child fixture, transport, protocol, real watchdog, HTTP boundary, and approval
+paths are unchanged by this ordering correction. Live NTS collection remains
+unstarted, measurement age unknown, and approval eligibility blocked.
