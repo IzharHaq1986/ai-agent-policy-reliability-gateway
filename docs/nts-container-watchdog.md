@@ -830,3 +830,213 @@ observation; do not loosen the comparison or extend the deadline.
 The child fixture, transport, protocol, real watchdog, HTTP boundary, and approval
 paths are unchanged by this ordering correction. Live NTS collection remains
 unstarted, measurement age unknown, and approval eligibility blocked.
+
+## Future bootstrap context and acknowledgement contract
+
+Status: design only. No bootstrap codec, transport dispatcher, launcher change,
+real-watchdog handoff, or independent health supervisor is implemented by this
+section. The existing watchdog CLI and two-event persisted record remain
+unchanged. The current synthetic fixture still receives its fixed context through
+reviewed argv; its version-2 report and one health exchange do not implement this
+future context-delivery protocol.
+
+In everyday terms, the supervisor prepares one job card for one worker and asks
+for a receipt for that same card. The receipt means only that the worker checked
+and adopted the card. It is not permission to begin work, proof that the watchdog
+is armed, or evidence that its clock readings are trustworthy.
+
+### Exact message schemas
+
+A bootstrap packet is one complete UTF-8 JSON object, at most the existing
+2,048-byte packet limit including whitespace. It has exactly the following ten
+fields. No nested values, extra keys, duplicate keys, missing keys, BOM, invalid
+UTF-8, type coercion, or truncated input is accepted. Writers produce compact,
+sorted-key JSON; receivers compare validated field values and exact types, not
+JSON key order. A boolean is never an integer. Integer fields are in the existing
+signed-63-bit positive range, 1 through 9223372036854775807.
+
+| Field | Context packet | Acknowledgement packet |
+| --- | --- | --- |
+| `version` | Integer `1`, the bootstrap schema version | Integer `1` |
+| `kind` | Exact string `bootstrap_context` | Exact string `bootstrap_ack` |
+| `token` | Fresh unpredictable 64-character lowercase hexadecimal bootstrap token | Exact value from the adopted context |
+| `boot_id` | Lowercase UUID-shaped string using the existing Lifetime format | Exact value from the adopted context |
+| `collection_id` | Lowercase UUID-shaped string using the existing Lifetime format | Exact value from the adopted context |
+| `container_id` | Full 64-character lowercase hexadecimal container ID | Exact value from the adopted context |
+| `owner` | 32-character lowercase hexadecimal ownership label token | Exact value from the adopted context |
+| `watchdog_pid` | Positive integer retained-child PID | Exact value from the adopted context |
+| `watchdog_start_ticks` | Positive integer kernel process-start reference | Exact value from the adopted context |
+| `deadline_ns` | Positive integer absolute host-monotonic nanoseconds | Exact value from the adopted context |
+
+The UUID-shaped fields have the exact existing `8-4-4-4-12` lowercase hexadecimal
+shape; this contract adds no UUID-version interpretation. The seven lifetime
+fields retain their existing health-protocol names and types. Bootstrap version
+1 is a separate namespace from health version 1: dispatch requires the expected
+phase and exact `kind`, not a version number alone. The acknowledgement echoes all
+seven lifetime fields and bootstrap token without changing or deriving any of
+them. Trusted parent code generates the unpredictable 256-bit token after the
+independent launch checks and before freezing the context. Generation failure
+blocks bootstrap; format checking alone does not prove unpredictability. Do not
+reuse this token for a later health challenge. There is no bootstrap sequence
+counter, replacement token, replacement deadline, or second context within the
+same launched attempt. Exact token/context agreement, the fresh collection
+reference, and retained launch association correlate the receipt to this context;
+they are not message authentication or cryptographic proof of sender identity.
+
+For example, these are synthetic schema illustrations, not launch instructions
+or evidence of an existing container or valid deadline:
+
+```json
+{"boot_id":"11111111-1111-4111-8111-111111111111","collection_id":"22222222-2222-4222-8222-222222222222","container_id":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","deadline_ns":100000000000,"kind":"bootstrap_context","owner":"cccccccccccccccccccccccccccccccc","token":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","version":1,"watchdog_pid":4242,"watchdog_start_ticks":9000}
+```
+
+```json
+{"boot_id":"11111111-1111-4111-8111-111111111111","collection_id":"22222222-2222-4222-8222-222222222222","container_id":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","deadline_ns":100000000000,"kind":"bootstrap_ack","owner":"cccccccccccccccccccccccccccccccc","token":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","version":1,"watchdog_pid":4242,"watchdog_start_ticks":9000}
+```
+
+Neither packet accepts a command, path, tool request, policy override, credential,
+container-name prefix, or caller-selected configuration. The ownership label is
+an association reference, not a credential. Synthetic placeholder references
+cannot establish actual container ownership.
+
+### Field origins and checks without circular trust
+
+| Value | Trusted origin and availability | Required child check |
+| --- | --- | --- |
+| Boot and deadline | Supervisor records the local boot and original absolute deadline before launch | Compare with the child's local boot and trusted fixed launch deadline; check the current bound |
+| Bootstrap token | Trusted supervisor generates it after independent launch checks, before freezing the packet | Validate syntax and echo only after context validation/adoption; do not treat token knowledge as execution authority |
+| Collection reference | Supervisor allocates a fresh reference once before launch and retains it in its immutable attempt record | Validate syntax and adopt once from the restricted channel; this does not independently prove allocation or freshness |
+| Container and owner | Supervisor records an independently observed full ID and fresh label on its stopped owned container before launch | Validate syntax during adoption; independently verify exact ownership and created state before arming |
+| PID and start reference | Supervisor obtains PID from its direct-child handle and start ticks from bounded kernel observation after launch | Compare against the child's actual own PID and kernel start reference, not values copied from the request |
+
+Before any context is received, trusted launch metadata must already supply the
+child's expected endpoint device/inode and resource bounds, original deadline,
+and a finite bootstrap cutoff in the same host-monotonic clock domain. This is a
+restricted fixed launch profile, not an externally selectable argv interface.
+These prerequisites prevent an untrusted packet from choosing how long its own
+receiver waits or which descriptor is adopted. Full context construction waits
+until the supervisor has the retained child's independent lifetime evidence.
+
+The bootstrap cutoff is fixed before launch, no later than the original deadline,
+and subject to explicit server-owned startup limits. Both send and receive must
+finish before it; equality is expiry. Re-reading, receiving a packet, adoption,
+and acknowledgement never refresh it. Missing timing configuration or an
+unverifiable clock-domain/boot association blocks bootstrap. These are experiment
+startup limits, not gateway clock-health thresholds or production defaults.
+
+The authoritative context deadline is the same integer `deadline_ns` later used
+by the health protocol. A future adapter to the existing seconds-based watchdog
+must explicitly verify that its representation cannot extend that deadline and
+that the armed record matches that recorded representation. No implicit rounding,
+new deadline calculation on receipt, or deadline inferred from an acknowledgement
+is permitted. This conversion and its proof remain implementation prerequisites;
+the existing watchdog interface and event schema are not changed here.
+
+### Required startup order and acknowledgement meaning
+
+1. The supervisor records immutable pre-launch context and cutoff, creates the
+   private pair, and launches only the restricted reviewed child. It retains the
+   direct-child handle and pidfd and closes its spare child endpoint as required.
+2. The supervisor observes the independent process-start reference before the
+   existing bounded progress report. The child performs checked endpoint adoption
+   and explicit original-descriptor release before reporting progress. For the
+   synthetic path, the only pre-context progress indication is the existing exact
+   version-2 fixture report; no arbitrary packet is treated as progress. A future
+   real watchdog must separately implement and validate the corresponding entry
+   path. A launch handle alone does not establish command publication.
+3. After that report, both full pre-health command checks bracket independent
+   endpoint and original-descriptor observations, and must agree with the earlier
+   start witness. Report values, boot, retained lifetime, and exit checks remain
+   mandatory. Progress receipt cannot establish any of these facts by itself.
+4. The supervisor freezes the exact independently established context and makes
+   one whole-packet context send before the cutoff. The child accepts it only in
+   its awaiting-context state, validates schema, local lifetime, boot, deadline,
+   and fixed launch constraints, and adopts the immutable values once.
+5. The child makes one bounded acknowledgement send containing the adopted
+   context. The supervisor accepts it only while awaiting that receipt, before
+   the same cutoff, after exact schema/type/value comparison with its frozen
+   context and fresh independent full-command/start, boot, and exit checks. No
+   packet field selects the expected PID, endpoint, container, or deadline for
+   those checks.
+6. Only a context-confirmed supervisor may advance its own armed-evidence and
+   health admission gates. The child cannot know whether its receipt reached the
+   supervisor: after its one whole-packet acknowledgement send succeeds, it may
+   attempt arming only under the existing independent authorization, exact
+   ownership, created-state, and deadline checks. It then persists and reports
+   matching armed evidence. A failed acknowledgement send cannot newly authorize
+   arming. Receipt loss after a successful send may therefore leave the child
+   armed while the supervisor still treats bootstrap as unconfirmed. The watchdog
+   must answer any later health challenge in its actual deadline loop. Bootstrap
+   acknowledgement is neither an armed event nor a health response.
+7. Any future readiness claim still requires the complete restricted handoff,
+   current independent identity checks, matching armed evidence, and a valid fresh
+   health exchange. Container start additionally requires every independent
+   authorization, isolation, ownership, and remaining-time gate. A receipt alone
+   never authorizes arming, container start, approval consumption, or tool dispatch.
+
+The existing persisted armed event does not contain every Lifetime field. A
+future integration must bind it to the immutable launch/context record through
+independently validated provenance and matching existing fields; it must not
+pretend that the current event contains a collection reference or start ticks.
+This contract neither adds fields to that record nor declares that association
+implemented. The post-reply command/lifetime, boot, and exit checks remain
+required before any future admission of work.
+
+### Phase, failure, and resource rules
+
+The supervisor has one progression: awaiting progress, awaiting context receipt,
+context confirmed, then the separate armed/health gates. It sends context only
+once after progress and independent checks; awaiting context receipt means it is
+waiting for the acknowledgement, not permission to send another context. The
+child progresses from awaiting context to context adopted to acknowledgement
+sent. Failure is terminal for the attempt. Neither side reopens bootstrap after
+confirmation, accepts a second context, or initializes a second health session
+to recover from a failed startup.
+
+| Observation | Required outcome |
+| --- | --- |
+| Missing, malformed, oversized, wrong-version, or unexpected-kind packet | Fail the attempt; no parser fallback or partial packet acceptance |
+| Duplicate context or acknowledgement, even with identical fields | Fail; no idempotent replay or readiness refresh |
+| Wrong token, changed context, wrong collection, wrong lifetime, or wrong deadline in a receipt | Fail exact comparison; do not replace expected context from the packet |
+| Missing or late progress, context, or acknowledgement | Stop admission under the original cutoff; no resend, new context, deadline, or child |
+| Context adopted but receipt lost or send confirmation missing | Supervisor outcome remains unconfirmed; do not infer that adoption did not occur |
+| Queue full or peer closure | Fail bootstrap without blocking, busy retrying, or extending time |
+| Empty, different, or oversized command snapshot after progress | Preserve immediate identity rejection; no reread-until-match |
+| Boot/start reference changes, child exit, or unavailable independent evidence | Fail the retained attempt; no association with another PID or process |
+
+Temporary receive unavailability may return to bounded readiness waiting under
+the unchanged cutoff; it is not a new send or a fresh budget. Every receive
+reserves at most one existing bounded packet buffer. Each side retains only its
+one immutable context and at most one acknowledgement; no unbounded queue,
+message history, buffering of unexpected phases, or silent truncation is allowed.
+Socket bounds and ancillary rejection reuse the existing transport requirements.
+No negative acknowledgement, error packet, or health packet substitutes for either
+bootstrap schema. Failures use a separately bounded diagnostic path, not a new
+message type or a packet queued for later reinterpretation.
+
+The supervisor must not admit work before its own context confirmation. A child
+whose bootstrap failed must not newly arm. A child that adopted valid context and
+completed its acknowledgement send may arm only under the separate gates above;
+its supervisor may still lack the receipt. If arming may already have happened,
+the supervisor's missing receipt does not prove otherwise. Preserve references
+and reconcile state through the authorized path; later discovery of
+adoption cannot retroactively confirm startup or permit delayed start. Any
+already-armed watchdog must retain its original independent deadline obligation.
+Channel loss must never disarm it. Bounded cleanup or fallback requires its own
+existing authorization and independent verification, not authority inferred from
+an error or an AI-generated diagnosis.
+
+For independent review, check every field against `nts_health_protocol.Lifetime`,
+compare phase handling with the current bounded transport and synthetic handoff,
+and verify that no receipt substitutes for the two-event armed record or current
+health. Future codec and integration tests must cover each failure row, no-send
+before independent identity checks, exact acknowledgement matching, cutoff
+expiry, lost receipt after adoption, and retained deadline action after channel
+failure. These are required future proofs, not results demonstrated by this doc.
+
+No cryptographic sender authentication, continuous executable integrity, clock
+accuracy, or future responsiveness follows from context agreement. The reviewed
+launch profile, descriptor confinement, controlled host, independent supervision,
+and all existing trusted-time prerequisites remain necessary. Runtime approval
+remains blocked, live NTS collection remains unstarted, and measurement age
+remains unknown.
