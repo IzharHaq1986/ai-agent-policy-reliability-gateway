@@ -3,7 +3,6 @@
 import importlib  # Import only the test-support harness under explicit test control.
 import os  # Check owned child reaping and descriptor release independently.
 import signal  # Exercise unsafe-reaper rejection without launching a child.
-import socket  # Feed real local packets into bounded fixture-report validation.
 from pathlib import Path  # Locate the reviewed support files deterministically.
 
 import pytest  # Express expected failures and restore injected faults after each test.
@@ -57,6 +56,12 @@ def test_real_handoff_and_independent_exit(module, launches, duplicate):
     result = module.run_case(duplicate=duplicate, startup_seconds=5, cleanup_seconds=2)
     # Require the pidfd witness.
     assert result["child_exit_independently_observed"] is True
+    assert result["checked_adoption_used"] is True  # Exercise the real adoption helper.
+    # The parent must independently observe original release, not trust its report.
+    assert result["child_original_absence_observed"] is True
+    assert (
+        type(result["child_owned_fd"]) is int
+    )  # Keep the checked locator's exact type.
     # Compare the two actual socket cases.
     assert result["closure_hidden_by_duplicate"] is duplicate
     # This proof is not time freshness evidence.
@@ -276,6 +281,14 @@ def test_injected_extra_inheritance_is_rejected(module, launches, monkeypatch):
         ),
         ("start_ticks", 1),
         (
+            "version",
+            1,
+        ),  # The prior raw-socket schema cannot satisfy the checked-copy proof.
+        (
+            "original_closed",
+            False,
+        ),  # Never accept a missing source-release acknowledgement.
+        (
             "non_inheritable",
             False,
         ),
@@ -317,13 +330,16 @@ def test_mismatched_report_never_passes(module, launches, monkeypatch, field, va
 )
 def test_malformed_report_is_bounded(module, monkeypatch, packet):
     # Use real records.
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    # Match the parser's actual bounded transport input, preserving every bad packet.
+    left, right = module.create_pair(buffer_bytes=8192, effective_buffer_limit=16384)
     # Data is already queued in this unit test.
     monkeypatch.setattr(module, "_wait", lambda *args: None)
     # Isolate packet parsing only.
     monkeypatch.setattr(module, "_child_exited", lambda _: False)
     try:  # Close both test endpoints even when the parser rejects input.
-        left.send(packet)  # Feed the exact malformed or oversized record.
+        # Deliberately bypass the sender cap only to fault-inject invalid receiver
+        # input.
+        left._owned().send(packet)
         with pytest.raises((module.HandoffError, ValueError)):
             # No real process identity is claimed by this unit fixture.
             module._report(right, -1, 0)
@@ -436,3 +452,143 @@ def test_lost_launch_ack_does_not_claim_no_child(module, launches, monkeypatch):
             # Verify exact-child stop and reaping.
             assert module._cleanup(child, None, 2)
     assert_reaped(launches)  # Confirm the injected child really existed and was reaped.
+
+
+@pytest.mark.parametrize("field", [0, 1, 2, 3])
+def test_child_rejects_wrong_trusted_adoption_context(
+    module, launches, monkeypatch, field
+):
+    """Require the child to validate the supplied adoption context."""
+    original = module._adoption_context  # Preserve the actual fixed context formatter.
+
+    def wrong(
+        identity,
+    ):  # Inject one explicit bad expectation into the real child argv.
+        context = list(
+            original(identity)
+        )  # Keep the reviewed argument shape unchanged.
+        if field in (0, 1):  # Device or inode must match the actual inherited object.
+            context[field] = str(
+                (int(context[field]) ^ 1) or 2
+            )  # Keep a valid wrong integer.
+        else:  # Invalid resource settings cannot be repaired inside the child.
+            context[field] = (
+                "0"  # The shared transport configuration gate must reject it.
+            )
+        return tuple(
+            context
+        )  # The parent's command witness still checks the actual argv.
+
+    monkeypatch.setattr(
+        module, "_adoption_context", wrong
+    )  # Fault the trusted test context only.
+    with pytest.raises(
+        module.HandoffError
+    ):  # No fixture report can restore a rejected setup.
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert_reaped(launches)  # The exact failed child must still be cleaned and reaped.
+    assert len(launches) == 1  # No replacement child is allowed after rejection.
+    assert (
+        launches[0][0].returncode == 4
+    )  # The real child rejected its adoption inputs.
+
+
+def test_false_original_release_claim_is_rejected(module, launches):
+    """A correct-looking report must not replace the independent absence observation."""
+    with pytest.raises(module.HandoffError, match="ORIGINAL_STILL_OPEN"):
+        module.run_case(
+            duplicate=False,
+            startup_seconds=5,
+            cleanup_seconds=2,
+            _mode="retain_original",
+        )  # The child deliberately keeps its source open.
+    assert_reaped(
+        launches
+    )  # Parent cleanup handles the failed fixture without a retry launch.
+    assert len(launches) == 1  # Do not reopen the failed attempt under a new child.
+
+
+def test_original_close_confirmation_loss_fails_attempt(module, launches):
+    """Keep original-release uncertainty failed despite later child cleanup."""
+    with pytest.raises(module.HandoffError, match="FIXTURE_RELEASE_UNCONFIRMED"):
+        module.run_case(
+            duplicate=False,
+            startup_seconds=5,
+            cleanup_seconds=2,
+            _mode="source_close_failure",
+        )  # Real close occurs before acknowledgement loss.
+    assert_reaped(
+        launches
+    )  # The parent still independently verifies final exit/reaping.
+    assert (
+        launches[0][0].returncode == 6
+    )  # Keep release uncertainty distinct from bad input.
+
+
+@pytest.mark.parametrize("locator", [True, None, "3", 2, -1, 1 << 31])
+def test_owned_descriptor_locator_is_validated(module, launches, monkeypatch, locator):
+    """A report may locate a descriptor only inside the already retained child."""
+    original = module._report  # Preserve actual bounded report reception first.
+
+    def changed(
+        *args,
+    ):  # Alter one untrusted report field without changing launch ownership.
+        report = original(*args)  # The real child still performs checked adoption.
+        report["owned_fd"] = (
+            locator  # Invalid types or ranges cannot select a kernel path.
+        )
+        return report  # The parent must reject before using this locator.
+
+    monkeypatch.setattr(
+        module, "_report", changed
+    )  # Keep all other evidence checks intact.
+    with pytest.raises(module.HandoffError, match="INVALID_OWNED_REFERENCE"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert_reaped(launches)  # A rejected locator cannot skip exact-child cleanup.
+
+
+def test_original_absence_evidence_is_required(module, launches, monkeypatch):
+    """Unreadable kernel evidence is not proof that the original descriptor is gone."""
+
+    def denied(*args):  # Fail only the independent original-reference observation.
+        raise PermissionError(
+            "private absence detail"
+        )  # Never print raw filesystem details.
+
+    monkeypatch.setattr(
+        module, "_original_absent", denied
+    )  # Do not alter the child's valid report.
+    with pytest.raises(module.HandoffError, match="HANDOFF_UNAVAILABLE"):
+        module.run_case(duplicate=False, startup_seconds=5, cleanup_seconds=2)
+    assert_reaped(
+        launches
+    )  # Retained identity still bounds cleanup after unavailable evidence.
+
+
+def test_closed_channel_reconciliation_keeps_original_deadline(module, monkeypatch):
+    """A closed channel cannot renew startup while the final child status is pending."""
+    parent, child = module.create_pair(buffer_bytes=8192, effective_buffer_limit=16384)
+    # Create actual closure before a simulated final-exit publication delay.
+    child.close()
+    calls = []  # Record the initial receive and failed-start reconciliation waits.
+
+    def wait(pidfd, endpoint, deadline):  # This unit fixture has no real child.
+        # Retain the exact supplied startup boundary.
+        calls.append((endpoint, deadline))
+        # The next wait must observe only the retained lifetime reference.
+        if len(calls) == 2:
+            # Failed-start reconciliation cannot reopen the channel.
+            assert endpoint is None
+            # Model expiry of the original bound.
+            raise module.HandoffError("STARTUP_EXPIRED")
+
+    monkeypatch.setattr(module, "_wait", wait)  # Isolate the timing-state transition.
+    # Delay exit publication.
+    monkeypatch.setattr(module, "_child_exited", lambda _: False)
+    try:  # Keep this parser fixture independently clean.
+        with pytest.raises(module.HandoffError, match="STARTUP_EXPIRED"):
+            module._report(parent, -1, 123.0)  # Closure cannot become readiness.
+        # Never reset the timeline.
+        assert [limit for _, limit in calls] == [123.0, 123.0]
+    finally:  # Releasing an already rejected owned endpoint is idempotent.
+        parent.close()  # Close only the test's owned transport reference.

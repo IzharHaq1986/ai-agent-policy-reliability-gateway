@@ -1,127 +1,254 @@
-"""Fixed harmless child for the inheritance proof; never a watchdog or tool."""
+"""Fixed harmless child using checked transport adoption; never a watchdog."""
 
-import errno  # Identify actual descriptor absence without magic numbers.
-import json  # Send a small synthetic report through the inherited endpoint.
-import math  # Reject an unbounded or invalid fixture deadline.
-import os  # Check inherited descriptors and restore close-on-exec.
-import select  # Wait within the parent-supplied synthetic deadline.
-import socket  # Use the one endpoint explicitly passed by the trusted harness.
-import sys  # Read only the fixed harness argument schema.
-import time  # Keep the harmless fixture's lifetime bounded.
-from pathlib import Path  # Read this child's own kernel start reference.
+import errno  # Distinguish an absent excluded descriptor from unavailable evidence.
+import json  # Send a bounded fixture report, not a health or approval message.
+import math  # Reject invalid or unbounded synthetic startup deadlines.
+import os  # Close only the raw inherited original owned by this child.
+import select  # Wait within the original budget without spinning on an empty queue.
+import sys  # Accept only the fixed harness schema and reviewed import location.
+import time  # Preserve the parent's original startup deadline.
+from pathlib import Path  # Resolve the reviewed support directory and own kernel data.
 
-PACKET_BYTES = 2048  # Match the existing health protocol's packet ceiling.
+
+class FixtureReleaseError(RuntimeError):
+    """Use a distinct exit status when a resource release was not confirmed."""
 
 
 def main() -> int:
-    """Check inheritance, report it, and exit only after one fixed exit packet."""
-    if len(sys.argv) != 7:  # Reject anything outside the fixed fixture interface.
-        return 2  # Never reinterpret extra arguments as commands.
-    # Use trusted FD references.
-    endpoint_fd, parent_fd, sentinel_fd = map(int, sys.argv[1:4])
-    deadline = float(sys.argv[4])  # Share the original synthetic startup deadline.
-    mode = sys.argv[5]  # Failure tests select only reviewed harmless modes.
-    expected_size = int(sys.argv[6])  # Detect packet-limit drift between the two files.
+    """Adopt a checked copy, close the original, report, and await one exit packet."""
     if (
-        mode not in {"normal", "early_exit", "stall"}  # No arbitrary action mode.
-        or expected_size != PACKET_BYTES  # Reject drift from the shared packet ceiling.
-        or not math.isfinite(deadline)  # Never wait on NaN or infinity.
-        or not 0 < deadline - time.monotonic() <= 10  # Retain a bounded live budget.
-        or min(endpoint_fd, parent_fd, sentinel_fd)
-        <= 2  # Do not adopt standard streams.
-        or len({endpoint_fd, parent_fd, sentinel_fd}) != 3  # Require distinct roles.
+        len(sys.argv) != 11
+    ):  # Old or malformed argument layouts cannot run this fixture.
+        return 2  # Do not reinterpret additional fields as commands or import paths.
+    # Isolated Python deliberately excludes the script directory from imports.
+    original_path = sys.path[:]  # Restore interpreter search state after fixed imports.
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parent)
+    )  # Add only reviewed support code.
+    try:  # No argument or environment variable can select either module's location.
+        from nts_health_protocol import (
+            PACKET_BYTES,
+        )  # Reuse the existing packet ceiling.
+
+        # Use the actual checked transport operations.
+        from nts_health_transport import (
+            # Track the adopted duplicate independently from the raw original.
+            Endpoint,
+            # Treat validation and close uncertainty as fixture failure.
+            TransportError,
+            # Permit only bounded readiness waiting under the original budget.
+            WouldBlock,
+            # Validate a duplicate before accepting this inherited endpoint.
+            adopt_inherited,
+        )
+    # Avoid retaining an extra import-path entry, including in direct unit tests.
+    finally:
+        sys.path[:] = original_path  # Never accept a caller-selected import fallback.
+    source_fd, parent_fd, sentinel_fd = map(
+        int, sys.argv[1:4]
+    )  # Fixed trusted FD references.
+    deadline = float(
+        sys.argv[4]
+    )  # Use the unchanged parent-generated monotonic deadline.
+    mode = sys.argv[5]  # Only reviewed harmless failure modes are accepted.
+    expected_size = int(sys.argv[6])  # Check agreement with the shared packet limit.
+    device, inode, buffer_bytes, ceiling = map(
+        int, sys.argv[7:11]
+    )  # Trusted launch context.
+    if (  # Reject malformed context before treating any descriptor as owned input.
+        mode
+        not in {
+            "normal",
+            "early_exit",
+            "stall",
+            "source_close_failure",
+            "retain_original",
+        }
+        or expected_size != PACKET_BYTES  # No packet-limit override is accepted.
+        or not math.isfinite(deadline)  # Never wait on an infinite or NaN deadline.
+        or not 0
+        < deadline - time.monotonic()
+        <= 10  # Retain an explicit finite lifetime.
+        or min(source_fd, parent_fd, sentinel_fd) <= 2  # Do not adopt standard streams.
+        or len({source_fd, parent_fd, sentinel_fd})
+        != 3  # Require separate original roles.
     ):
-        return 2  # Invalid setup never produces a passing fixture report.
-    if mode == "early_exit":  # Exercise child exit before any readiness evidence.
-        return 3  # Let the parent's pidfd reveal this independent failure.
-    # Adopt, rather than duplicate, our end.
-    endpoint = socket.socket(fileno=endpoint_fd)
-    try:  # Close our single owned endpoint on every ordinary exit path.
-        endpoint.set_inheritable(False)  # Prevent later exec from retaining this end.
-        endpoint.setblocking(False)  # Never let a socket operation wait indefinitely.
-        # Check both deliberately excluded FDs.
-        for unwanted in (
+        return 2  # Invalid setup cannot yield a successful fixture report.
+    if (
+        mode == "early_exit"
+    ):  # Preserve the existing exit-before-readiness negative case.
+        return (
+            3  # Process exit releases inherited descriptors without a passing report.
+        )
+    source_open = (
+        True  # This child owns the inherited original until its one close attempt.
+    )
+    endpoint: Endpoint | None = (
+        None  # The adoption helper owns only a separate duplicate.
+    )
+    try:  # Every acquired reference has an explicit cleanup path.
+        for excluded in (
             parent_fd,
             sentinel_fd,
-        ):
-            try:  # A surviving excluded descriptor invalidates this fixture.
-                # Observe kernel FD state instead of trusting arguments.
-                os.fstat(unwanted)
-            except OSError as error:  # Only actual absence is acceptable.
-                # EBADF means this descriptor was closed at exec.
-                if error.errno != errno.EBADF:
-                    return 4  # Permission or other errors cannot prove absence.
-            else:  # Any accessible excluded FD violates the tested allowlist.
-                return 4  # Do not send a successful inheritance report.
-        if mode == "normal":  # The stalled fixture deliberately emits no report.
-            # Inspect our own lifetime.
-            with Path("/proc/self/stat").open("rb") as source:
-                raw = source.read(4097)  # Read one extra byte to detect oversized data.
-            if len(raw) > 4096:  # Never parse an unbounded kernel observation.
-                return 4  # Missing trustworthy lifetime data prevents this report.
-            ticks = int(raw.rsplit(b") ", 1)[1].split()[19])  # Field 22 is start time.
-            # Report only synthetic fixture observations.
-            # Keep this report distinct from the health protocol.
-            # Keep encoding deterministic and bounded.
+        ):  # Check exclusions before FD numbers are reused.
+            try:  # Kernel absence is stronger than a report assertion alone.
+                os.fstat(
+                    excluded
+                )  # Do not assume close_fds worked merely from launch options.
+            except (
+                OSError
+            ) as error:  # Only EBADF proves this original entry was absent.
+                if (
+                    error.errno != errno.EBADF
+                ):  # Other failures make evidence unavailable.
+                    return 4  # Do not report successful confinement from an error.
+            else:  # A surviving excluded descriptor violates the fixed launch profile.
+                return 4  # Adoption cannot repair a leaked unrelated reference.
+        # Expected identity comes from the parent, not our reply.
+        endpoint = adopt_inherited(
+            source_fd,  # Borrow the original without transferring its close ownership.
+            # Bind to the parent's captured kernel device identity.
+            expected_device=device,
+            expected_inode=inode,  # Bind to the parent's captured socket inode.
+            buffer_bytes=buffer_bytes,  # Preserve explicit existing resource bounds.
+            # Do not resize an invalid inherited socket.
+            effective_buffer_limit=ceiling,
+        )
+        # Only a negative fixture deliberately retains the inherited original.
+        if mode != "retain_original":
+            source_open = False  # Never retry an uncertain close against a reused slot.
+            try:  # Adoption left this original for the trusted child to release once.
+                os.close(source_fd)  # Release only this child's inherited original.
+            except OSError:  # An error cannot prove that the close did not occur.
+                raise FixtureReleaseError("ORIGINAL_RELEASE_UNCONFIRMED") from None
+            if (
+                mode == "source_close_failure"
+            ):  # Model lost confirmation after real close.
+                raise FixtureReleaseError("ORIGINAL_RELEASE_UNCONFIRMED")
+        owned_fd = (
+            endpoint._owned().fileno()
+        )  # Narrow synthetic inspection, not a handoff API.
+        if mode in {"normal", "retain_original"}:  # A stalled fixture emits no report.
+            with Path("/proc/self/stat").open(
+                "rb"
+            ) as source:  # Observe this child's lifetime.
+                raw = source.read(4097)  # Detect overflow before parsing kernel data.
+            if len(raw) > 4096:  # Do not parse shortened or unbounded evidence.
+                return 4  # Missing lifetime evidence prevents a passing report.
+            ticks = int(
+                raw.rsplit(b") ", 1)[1].split()[19]
+            )  # Kernel field 22 is start time.
             message = json.dumps(
-                {
-                    "version": 1,
-                    # The parent independently verifies this assertion.
+                {  # This versioned fixture report is not a health reply.
+                    # Distinguish checked-copy ownership from the earlier raw proof.
+                    "version": 2,
+                    # The parent independently checks its retained child.
                     "pid": os.getpid(),
-                    # Compare against the parent's bounded local read.
+                    # The parent compares an independent kernel witness.
                     "start_ticks": ticks,
-                    # Both explicitly excluded descriptors were absent.
+                    # The excluded originals were absent before adoption.
                     "excluded_closed": True,
-                    # Report restored ownership.
-                    "non_inheritable": not endpoint.get_inheritable(),
+                    # Verify the copy.
+                    "non_inheritable": not endpoint._owned().get_inheritable(),
+                    # This is only an untrusted locator for parent inspection.
+                    "owned_fd": owned_fd,
+                    # The retained-original negative case deliberately makes a false
+                    # claim.
+                    "original_closed": True,
                 },
                 sort_keys=True,
-            ).encode("ascii")
-            # Refuse to truncate any required report field.
-            if len(message) > PACKET_BYTES:
-                return 4  # A shortened report is not valid evidence.
-            if endpoint.send(message, socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL) != len(
+            ).encode("ascii")  # Keep encoding deterministic and bounded.
+            endpoint.send(
                 message
-            ):
-                return 4  # A partial send cannot establish the tested handoff.
-        # Wait without spinning while retaining a fixed deadline.
-        poller = select.poll()
-        # Observe our channel only.
-        poller.register(endpoint, select.POLLIN | select.POLLHUP)
-        # A stalled parent cannot keep this child forever.
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()  # Recompute the unchanged budget.
-            if remaining <= 0:  # Avoid a negative or reset wait interval.
-                break  # Expiry ends the harmless fixture.
-            # Block only for the remainder.
-            if not poller.poll(max(1, int(remaining * 1000))):
-                continue  # Recheck the same deadline after an empty readiness result.
-            try:  # Read only one complete fixed instruction from the trusted parent.
-                packet, _, flags, _ = endpoint.recvmsg(
-                    PACKET_BYTES, 0, socket.MSG_DONTWAIT
-                )
-            # Readiness can race; the original budget still applies.
-            except BlockingIOError:
-                continue  # No busy retry: the next iteration waits for readiness again.
-            # Only this harmless instruction is accepted.
-            if packet == b"exit" and not flags:
-                return 0  # A normal exit is independently observed through the pidfd.
-            return 4  # Closure, truncation, or unexpected packets fail the fixture.
-        return 5  # Expiry is failure, never delayed success.
-    finally:  # Release the endpoint whether reporting, waiting, or validation failed.
-        # Closing this copy does not close a deliberately retained parent copy.
-        endpoint.close()
+            )  # Reuse whole-packet limits and explicit transport failures.
+        poller = select.poll()  # Wait for input instead of repeatedly retrying receive.
+        poller.register(
+            owned_fd, select.POLLIN | select.POLLHUP
+        )  # Observe only our owned copy.
+        while (
+            time.monotonic() < deadline
+        ):  # A silent parent cannot keep this fixture forever.
+            remaining = (
+                deadline - time.monotonic()
+            )  # Never replace the original deadline.
+            if remaining <= 0:  # Stop before issuing an expired wait.
+                break  # Expiry is failure, not delayed success.
+            if not poller.poll(
+                max(1, math.ceil(remaining * 1000))
+            ):  # Wait only for the remainder.
+                continue  # Recheck the same budget after an empty readiness result.
+            if (
+                time.monotonic() >= deadline
+            ):  # A late readiness return cannot restore success.
+                return 5  # Keep startup timing fail-closed.
+            try:  # Even after readiness, a nonblocking read can legitimately race.
+                packet = endpoint.receive()  # Reuse truncation and ancillary rejection.
+            except (
+                WouldBlock
+            ):  # Temporary unavailability does not create a fresh budget.
+                # The next iteration waits for readiness rather than busy-spinning.
+                continue
+            return (
+                0 if packet == b"exit" else 4
+            )  # Only the fixed harmless instruction is allowed.
+        return 5  # A timeout can never be reported as completed fixture work.
+    except (
+        TransportError
+    ) as error:  # Preserve uncertain duplicate cleanup as a distinct failure.
+        if not error.cleanup_complete:  # A passing release acknowledgement is required.
+            raise FixtureReleaseError("DUPLICATE_RELEASE_UNCONFIRMED") from None
+        return 4  # A rejected endpoint cannot produce successful fixture evidence.
+    except (
+        WouldBlock,
+        OSError,
+    ):  # Other unavailable setup or single-send failures stop the fixture.
+        # The parent independently observes unsuccessful exit or missing evidence.
+        return 4
+    # Attempt both kinds of owned-resource cleanup, even after an earlier error.
+    finally:
+        failed = (
+            False  # Any unconfirmed release overrides an otherwise successful exit.
+        )
+        if (
+            endpoint is not None
+        ):  # Only an actually returned duplicate belongs to this object.
+            try:  # Closing the copy does not close any retained parent copy.
+                endpoint.close()  # Reuse the transport's one-attempt ownership cleanup.
+            except (
+                TransportError
+            ):  # An uncertain close cannot produce a pristine fixture PASS.
+                failed = True  # Do not retry the uncertain descriptor number.
+        if source_open:  # Adoption failed before the original's close attempt.
+            source_open = (
+                False  # Record the attempt before the potentially ambiguous call.
+            )
+            try:  # Only the child's inherited original is owned by this cleanup path.
+                os.close(
+                    source_fd
+                )  # Never close a reported or guessed unrelated descriptor.
+            except OSError:  # Preserve uncertainty instead of trying that number again.
+                failed = True  # No success is possible after unconfirmed release.
+        if failed:  # Cleanup must win over a previously prepared successful return.
+            raise FixtureReleaseError(
+                "FIXTURE_RELEASE_UNCONFIRMED"
+            )  # Never mask it with success.
 
 
-if __name__ == "__main__":  # Imports do not start even this harmless fixture.
-    # Convert invalid fixture inputs to a bounded failure status without a traceback.
-    try:
-        raise SystemExit(main())  # Return only the fixed fixture outcome.
-    # Malformed setup cannot produce readiness.
+if __name__ == "__main__":  # Importing the fixture never starts a child or an exchange.
+    try:  # Malformed inputs must fail without a private traceback.
+        raise SystemExit(main())  # Return only the fixed fixture status.
+    except (
+        FixtureReleaseError
+    ):  # Keep release uncertainty distinct from malformed input.
+        raise SystemExit(
+            6
+        ) from None  # The parent maps this status to an explicit failed attempt.
     except (
         OSError,
         ValueError,
         IndexError,
-    ):
-        # Do not print private arguments or kernel contents.
-        raise SystemExit(4) from None
+        ImportError,
+    ):  # Unavailable trusted setup cannot pass.
+        raise SystemExit(
+            4
+        ) from None  # Do not echo arguments, paths, or kernel contents.
