@@ -372,9 +372,9 @@ blocked.
    exit, inaccessible evidence, mismatches, or inconsistent observations. Bracket
    bootstrap and health exchanges with the retained lifetime/exit checks.
 4. Supply immutable collection context through a bounded, separately versioned
-   bootstrap message on the inherited endpoint. Its schema and adoption checks
-   require separate implementation; do not reinterpret bootstrap as a health
-   reply. The child checks its own lifetime against that context. Only after
+   bootstrap message on the inherited endpoint. The isolated codec below covers
+   packet syntax only; delivery and adoption checks still require separate
+   implementation. Do not reinterpret bootstrap as a health reply. The child checks its own lifetime against that context. Only after
    trusted lifetime observations agree may either side initialize the existing
    health protocol for that exact attempt.
 5. Require successful restricted handoff, observed expected lifetime, a matching
@@ -833,9 +833,10 @@ unstarted, measurement age unknown, and approval eligibility blocked.
 
 ## Future bootstrap context and acknowledgement contract
 
-Status: design only. No bootstrap codec, transport dispatcher, launcher change,
-real-watchdog handoff, or independent health supervisor is implemented by this
-section. The existing watchdog CLI and two-event persisted record remain
+Status: packet syntax and exact equality checks are implemented by the isolated
+codec described below. Delivery, the adoption/acknowledgement state machine,
+transport dispatch, real-watchdog handoff, and independent supervision remain
+design only. The existing watchdog CLI and two-event persisted record remain
 unchanged. The current synthetic fixture still receives its fixed context through
 reviewed argv; its version-2 report and one health exchange do not implement this
 future context-delivery protocol.
@@ -1029,8 +1030,9 @@ an error or an AI-generated diagnosis.
 For independent review, check every field against `nts_health_protocol.Lifetime`,
 compare phase handling with the current bounded transport and synthetic handoff,
 and verify that no receipt substitutes for the two-event armed record or current
-health. Future codec and integration tests must cover each failure row, no-send
-before independent identity checks, exact acknowledgement matching, cutoff
+health. Codec tests cover syntax and equality only. Future state-machine and
+integration tests must cover each failure row, no-send before independent identity
+checks, exact acknowledgement matching, cutoff
 expiry, lost receipt after adoption, and retained deadline action after channel
 failure. These are required future proofs, not results demonstrated by this doc.
 
@@ -1040,3 +1042,65 @@ launch profile, descriptor confinement, controlled host, independent supervision
 and all existing trusted-time prerequisites remain necessary. Runtime approval
 remains blocked, live NTS collection remains unstarted, and measurement age
 remains unknown.
+
+### Isolated bootstrap message codec
+
+`tests/support/nts_bootstrap_codec.py` implements only the packet syntax and
+exact-value comparison part of this contract. It reuses the existing internal
+Lifetime validation, token-format check, duplicate-key rejection, and shared
+packet ceiling. Its fixed version-1 field set prevents automatic schema expansion
+if the shared lifetime model changes. The health helper's interfaces and behavior
+are unchanged. CI includes the codec in the existing strict helper type check.
+
+`BootstrapContext` holds a frozen Lifetime and token. Public operations validate
+caller-created values; constructing the wrapper alone does not validate them.
+`encode_context` emits deterministic compact sorted-key UTF-8 context bytes.
+`decode_context` returns immutable syntax-validated assertions from complete
+context packets. `encode_acknowledgement` builds matching receipt bytes without
+proving that a child adopted anything. `verify_acknowledgement` returns None only
+when a bounded acknowledgement matches every lifetime field and token in the
+separately supplied expected context. That expected context must come from
+trusted launch state, never the receipt being checked.
+
+Both packet purposes enforce the exact ten-field schema and runtime types.
+Foreign objects, invalid UTF-8, BOM, other JSON encodings, duplicate decoded keys,
+missing/extra fields, nested field values, wrong versions/kinds, invalid reference
+formats, booleans in integer fields, non-finite numbers, out-of-range integers,
+and oversized packets fail closed. Valid JSON whitespace and key ordering are
+permitted within the whole-packet limit; encoders remain deterministic. No input
+is coerced, repaired, silently truncated, or accepted as a valid prefix.
+
+Errors are fixed `BootstrapError` reasons: `INVALID_CONTEXT` for invalid supplied
+expected/encoding values, `INVALID_PACKET` for rejected wire data, and
+`ACKNOWLEDGEMENT_MISMATCH` for a structurally valid but different receipt. Errors
+and this module's output do not echo packet contents. For a parse failure, inspect
+the caller's purpose selection, exact bytes, schema, types, and size in authorized
+private diagnostics. For a mismatch, compare with the retained trusted context;
+never replace that context with values from the receipt. Correct the originating
+error rather than loosening the schema or retrying until equality appears.
+
+The module performs no I/O, clock reads, random-token generation, process or
+container observation, transport handling, child launch, adoption, arming, or
+permission decision. It tracks no session state. Repeated complete packets can
+pass syntax/equality checks repeatedly; the future state machine must reject
+replay, duplicate adoption, unexpected phases, and late messages. Duplicate JSON
+keys are rejected now, but this is distinct from duplicate-message tracking.
+A positive deadline can be syntactically valid even when expired, and a token can
+have valid syntax without being unpredictable. Parsing establishes neither fact.
+
+For independent verification:
+
+```bash
+python -m pytest -q tests/test_nts_bootstrap_codec.py
+MYPYPATH=tests/support python -m mypy --strict --follow-imports=silent tests/support/nts_bootstrap_codec.py
+```
+
+Focused tests check the published examples independently of the serializer,
+deterministic round trips, complete packet-size boundaries, escaped duplicate
+keys, exact field types and formats, invalid encodings, every receipt-field
+mismatch, and rejection across bootstrap/health namespaces. They also demonstrate
+that syntax/equality does not enforce time freshness or replay state. No sockets,
+child processes, Docker actions, or time-source queries are needed by these tests.
+Future integration must still implement every phase, provenance, cutoff, and
+independent verification gate above. Live collection remains unstarted,
+measurement age unknown, and approval eligibility blocked.
