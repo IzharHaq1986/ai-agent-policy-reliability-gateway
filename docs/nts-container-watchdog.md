@@ -1279,3 +1279,62 @@ interrupted validation, and the deliberate lack of persistent replay protection.
 Real child integration, delivery, independent identity observation, and actual
 watchdog health integration remain future work. Live NTS collection is not run;
 measurement age remains unknown and approval eligibility remains blocked.
+
+### Synthetic paired bootstrap exchange
+
+`tests/test_nts_paired_bootstrap_exchange.py` connects the actual supervisor and
+child controllers through the existing bounded `nts_health_transport` private
+socket pair. It uses the real bootstrap codec, not stubbed sends, receives, or
+packet comparisons. This is test-only composition in one process. No runtime
+helper, existing interface, launcher, watchdog, or CI step is changed.
+
+The success case releases and sends one supervisor context, reports that send,
+receives and adopts the context at the child, releases and sends one child receipt,
+reports that send, then receives and accepts it at the supervisor. Assertions
+separate byte equality, child adoption, receipt release, caller-reported send,
+and supervisor acceptance. Neither side's history is execution authority.
+
+Fault cases send malformed or mismatched packets over the actual channel, inject
+duplicate context and receipt packets deliberately, and deliver a matching receipt
+before the parent's send confirmation. Rejection must remain terminal even when
+the bytes otherwise match. Duplicate sends are adversarial test inputs, not a
+permitted orchestration retry. Another pair of cases leaves the real child receipt
+queued while the supervisor expires without accepting it. Child send confirmation
+cannot resolve the parent's missing receipt; missing child confirmation does not
+prove that no bytes were sent. A subsequent read cannot revive the failed parent.
+
+Every receive is one nonblocking attempt. Empty live queues raise `WouldBlock`;
+these tests do not sleep, poll, or retry. The missing-input cases explicitly advance
+the supplied observation to the original cutoff and require pending expiry without
+a packet. The late-input cases receive actual queued bytes and reject acceptance
+at equality with that cutoff. The peer-closure case requires the transport error
+and an explicit caller abort, never an invented receipt. A future event loop must
+apply its existing bounded wait policy; these tests supply no such event loop.
+
+The fixture closes both owned endpoints after every success or failure case and
+then independently calls `os.fstat` on both saved descriptor numbers, requiring
+`EBADF`. No descriptor-acquiring work is inserted between closure and verification.
+This checks actual test resource release, not a self-reported cleanup flag. A
+close failure fails the test; it is not retried against a potentially reused FD.
+
+All identities, tokens, and monotonic observations are synthetic, including the
+expected child PID and process-start reference. These tests establish component
+compatibility only: they do not establish process identity, sender authentication,
+clock provenance, actual elapsed-time bounds, scheduling guarantees, persistent
+replay protection, or readiness to start work. Real child and watchdog integration
+remain open. Live NTS collection is not run, measurement age remains unknown,
+and approval eligibility remains blocked.
+
+To investigate a failure, inspect the first failing assertion and the matching
+controller's immutable snapshot; compare it with the expected context in the test
+fixture. For transport failures inspect `nts_health_transport`, and for protocol
+phase failures inspect the appropriate bootstrap session helper. Keep operational
+packets private. Reproduce with the focused command before changing any helper:
+
+```sh
+python -m pytest -q tests/test_nts_paired_bootstrap_exchange.py
+```
+
+Correct the test or implementation against the documented phase and packet
+contracts. Do not make a rejection pass by adding a retry, refreshing a cutoff,
+removing independent checks, or treating historical confirmation as authority.
