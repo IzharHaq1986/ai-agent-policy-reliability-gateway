@@ -833,8 +833,8 @@ unstarted, measurement age unknown, and approval eligibility blocked.
 
 ## Future bootstrap context and acknowledgement contract
 
-Status: packet syntax and exact equality checks are implemented by the isolated
-codec described below. Delivery, the adoption/acknowledgement state machine,
+Status: packet syntax/equality and isolated supervisor-side in-memory receipt
+phases are implemented by the helpers below. Delivery, child-side adoption state,
 transport dispatch, real-watchdog handoff, and independent supervision remain
 design only. The existing watchdog CLI and two-event persisted record remain
 unchanged. The current synthetic fixture still receives its fixed context through
@@ -1030,8 +1030,9 @@ an error or an AI-generated diagnosis.
 For independent review, check every field against `nts_health_protocol.Lifetime`,
 compare phase handling with the current bounded transport and synthetic handoff,
 and verify that no receipt substitutes for the two-event armed record or current
-health. Codec tests cover syntax and equality only. Future state-machine and
-integration tests must cover each failure row, no-send before independent identity
+health. Codec tests cover syntax/equality and isolated supervisor tests cover
+one-instance receipt phases. Future child-state and transport integration tests
+must cover the complete failure table, no-send before independent identity
 checks, exact acknowledgement matching, cutoff
 expiry, lost receipt after adoption, and retained deadline action after channel
 failure. These are required future proofs, not results demonstrated by this doc.
@@ -1082,8 +1083,9 @@ error rather than loosening the schema or retrying until equality appears.
 The module performs no I/O, clock reads, random-token generation, process or
 container observation, transport handling, child launch, adoption, arming, or
 permission decision. It tracks no session state. Repeated complete packets can
-pass syntax/equality checks repeatedly; the future state machine must reject
-replay, duplicate adoption, unexpected phases, and late messages. Duplicate JSON
+pass syntax/equality checks repeatedly. The isolated supervisor helper below
+rejects duplicate receipts and wrong phases within one instance; child adoption,
+transport integration, and restart/recreation rules still require implementation. Duplicate JSON
 keys are rejected now, but this is distinct from duplicate-message tracking.
 A positive deadline can be syntactically valid even when expired, and a token can
 have valid syntax without being unpredictable. Parsing establishes neither fact.
@@ -1104,3 +1106,105 @@ child processes, Docker actions, or time-source queries are needed by these test
 Future integration must still implement every phase, provenance, cutoff, and
 independent verification gate above. Live collection remains unstarted,
 measurement age unknown, and approval eligibility blocked.
+
+### Isolated supervisor bootstrap state
+
+`tests/support/nts_bootstrap_session.py` adds single-owner in-memory phase and
+cutoff checks around the existing codec. It performs no socket I/O, clock reads,
+token generation, child launch, process verification, adoption, arming, Docker
+action, or execution. No current launcher or watchdog calls it. CI strict-checks
+it alongside all existing helpers. It does not implement the child-side state
+machine or independently schedule observation of a pending attempt.
+
+Trusted caller code constructs `BootstrapSession` with separately established
+immutable expected context, explicit `started_ns`, and a fixed `cutoff_ns` no
+later than that context's original deadline. Configuration requires exact bounded
+integers and `started_ns < cutoff_ns <= deadline_ns`; no default or replacement
+budget is provided. Actual creation after a launch must retain the previously
+recorded start/cutoff, not calculate a fresh allowance. Context is validated and
+encoded once during construction; only `prepare_context` releases those bytes.
+None of this establishes the origin or unpredictability of the supplied values.
+
+| Phase | Permitted progress operation | Result |
+| --- | --- | --- |
+| `ready` | `prepare_context(now_ns)` once | Return one complete context packet; enter `send_unconfirmed` |
+| `send_unconfirmed` | `confirm_sent(now_ns)` once | Record the caller's whole-packet-send report; enter `waiting_ack` |
+| `waiting_ack` | `accept_acknowledgement(packet, now_ns)` once | Validate exact matching receipt before cutoff; enter `confirmed` |
+| `confirmed` | Read historical snapshot | No second preparation, confirmation, or receipt; no authority is granted |
+| `failed` | Read historical snapshot | No progression or reopening |
+
+Every progression operation calls `check(now_ns)` first. Observations must be
+exact bounded integer nanoseconds and nondecreasing relative to the last accepted
+observation; equal observations are permitted. While pending, equality with or
+passage beyond the original cutoff permanently fails the session, even without
+a packet. Trusted orchestration must call `check` independently while waiting;
+the helper cannot detect time passing if no one calls it. Timing results relate
+only to supplied observations; the helper does not measure validation or call
+completion duration. Future orchestration must independently recheck the original
+cutoff and all other gates before admitting work, including after a stalled call.
+An invalid/backwards
+time, wrong phase, malformed/mismatched receipt, or explicit `abort(now_ns)`
+latches failure. Valid later packets and fresh time cannot recover the instance.
+A missing send report does not establish that no send happened, and a missing
+acknowledgement does not establish that the child did not adopt the context.
+
+`confirmed` records a past matching receipt accepted within the cutoff. A later
+`check` does not expire that historical fact, renew its cutoff, or attest current
+health or remaining execution time. It is not a lease. A duplicate receipt still
+fails the instance, while history retains that an earlier receipt was accepted.
+All future arming, identity, health, authorization, and original-deadline gates
+remain separate and mandatory. There is no readiness or approval result here.
+
+`snapshot()` returns frozen `BootstrapSnapshot` values: phase, original expected
+context, fixed cutoff, packet-release history, caller-reported send confirmation,
+past acknowledgement confirmation, and the first fixed failure reason. Snapshot
+reads neither observe time nor refresh the session. These are controller facts,
+not independent observations of external delivery or adoption. Release history
+marks the controller's release transition; an interrupted caller must not infer
+that it received or transmitted the packet. Original references and earlier
+confirmed facts remain available after failure for authorized investigation.
+Snapshots can contain operational references and must remain private.
+
+Normal errors use fixed `BootstrapSessionError` reasons: `INVALID_CONFIGURATION`,
+`INVALID_TIME`, `BOOTSTRAP_EXPIRED`, `WRONG_PHASE`, `ACKNOWLEDGEMENT_REJECTED`,
+`ACKNOWLEDGEMENT_UNAVAILABLE`, `PACKET_UNAVAILABLE`, and `BOOTSTRAP_ABORTED`.
+Later progression calls on a failed instance return `SESSION_FAILED` without
+replacing the first reason. An interruption during receipt validation or its
+confirmation transition latches `INTERRUPTED` and propagates the interruption.
+Unexpected validation errors are normalized without echoing their contents.
+Trusted orchestration must abandon an interrupted operation and reconcile its
+own resources; this pure helper neither owns those resources nor supplies a
+hard asynchronous interruption/scheduling guarantee.
+
+For independent verification:
+
+```bash
+python -m pytest -q tests/test_nts_bootstrap_session.py
+MYPYPATH=tests/support python -m mypy --strict --follow-imports=silent tests/support/nts_bootstrap_session.py
+```
+
+Tests drive explicit synthetic times without sleeps. They cover legal order,
+exclusive cutoff boundaries, expiry without receipts in each pending phase,
+invalid/backwards time, early and duplicate messages, malformed and mismatched
+receipts, explicit abort, unavailable/interrupted validation, immutable historical
+snapshots, and inability to recover a failed instance with valid matching input.
+They also demonstrate that a newly constructed instance can accept the same
+packet: this module does not persist replay history or prevent attempt recreation.
+
+For `WRONG_PHASE`, inspect the single trusted owner's call order rather than
+buffering or resending a message. For timing failures, compare supplied times
+with the retained original cutoff; do not reset either. For receipt failures,
+inspect the codec and independently established expected context in authorized
+private diagnostics. For `SESSION_FAILED`, inspect the first reason in the
+snapshot and stop admission; do not construct a replacement session as recovery.
+A pure failed state does not prove actual child exit or cleanup, so those require
+separate authorized action and independent verification.
+
+The helper requires a trusted single owner and is not thread-safe or resistant
+to privileged in-process mutation. The future launcher must enforce one instance
+per immutable attempt and fail on restart, lost observation, or ambiguous clock
+provenance. These conditions, real message delivery, child adoption, armed-record
+association, and independent health supervision remain unimplemented. Already
+armed deadline obligations are not canceled by a local failed session. No live
+NTS collection or runtime approval is enabled; measurement age remains unknown
+and approval eligibility blocked.
