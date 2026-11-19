@@ -151,6 +151,7 @@ jobs:
             tests/support/nts_evidence_publisher.py \
             tests/support/nts_workload_identity.py \
             tests/support/nts_health_protocol.py \
+            tests/support/nts_poll_timeout.py \
             tests/support/nts_bootstrap_codec.py \
             tests/support/nts_bootstrap_session.py \
             tests/support/nts_child_bootstrap_session.py \
