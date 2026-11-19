@@ -152,6 +152,7 @@ jobs:
             tests/support/nts_workload_identity.py \
             tests/support/nts_health_protocol.py \
             tests/support/nts_bootstrap_codec.py \
+            tests/support/nts_bootstrap_session.py \
             tests/support/nts_health_transport.py \
             tests/support/nts_child_handoff_fixture.py \
             tests/support/run_nts_child_handoff_acceptance.py
