@@ -833,9 +833,9 @@ unstarted, measurement age unknown, and approval eligibility blocked.
 
 ## Future bootstrap context and acknowledgement contract
 
-Status: packet syntax/equality and isolated supervisor-side in-memory receipt
-phases are implemented by the helpers below. Delivery, child-side adoption state,
-transport dispatch, real-watchdog handoff, and independent supervision remain
+Status: packet syntax/equality and isolated supervisor-side and child-side
+in-memory phases are implemented by the helpers below. Delivery, transport
+dispatch, real-watchdog handoff, and independent supervision remain
 design only. The existing watchdog CLI and two-event persisted record remain
 unchanged. The current synthetic fixture still receives its fixed context through
 reviewed argv; its version-2 report and one health exchange do not implement this
@@ -1208,3 +1208,74 @@ association, and independent health supervision remain unimplemented. Already
 armed deadline obligations are not canceled by a local failed session. No live
 NTS collection or runtime approval is enabled; measurement age remains unknown
 and approval eligibility blocked.
+
+### Isolated child bootstrap state
+
+`tests/support/nts_child_bootstrap_session.py` complements the supervisor helper
+with a pure, single-owner child-side controller. It performs no transport,
+process observation, watchdog arming, or execution. Existing entry points remain
+unchanged. Its tests use the actual bootstrap codec and synthetic identities.
+
+Trusted calling code must establish the expected `Lifetime` independently before
+construction. In particular, the boot, PID, and process-start values must come
+from trusted local observations, and the other launch constraints must come from
+trusted launch metadata. Passing packet fields straight into this constructor
+would defeat the independent comparison. This helper cannot detect that misuse,
+authenticate the sender, establish token unpredictability, or verify provenance.
+The token is adopted from the valid context; the retained lifetime is not.
+
+| Operation | Required phase | Result |
+| --- | --- | --- |
+| Construct with expected lifetime, start observation, and cutoff | New instance | Wait for one context |
+| `accept_context(packet, now_ns)` | Waiting context | Validate every field, compare the complete lifetime, retain immutable context |
+| `prepare_acknowledgement(now_ns)` | Adopted | Release one matching bounded receipt, with send unconfirmed |
+| `confirm_sent(now_ns)` | Send unconfirmed | Record trusted caller's whole-packet send report |
+| `check(now_ns)` | Any nonfailed phase | Validate supplied time; expire pending work at the fixed cutoff |
+| `abort(now_ns)` | Any nonfailed phase | Permanently fail while preserving historical facts |
+| `snapshot()` | Any phase | Return immutable history without renewing any deadline |
+
+Time values must be exact bounded nonnegative integers in one trusted monotonic
+domain. They cannot move backwards. The startup cutoff is fixed before input and
+must satisfy `started_ns < cutoff_ns <= expected.deadline_ns`. Equality is expiry
+in each pending phase, even without a new packet. Equal consecutive observations
+are permitted; phase order still applies. The helper does not read a clock,
+schedule checks, or measure validation/call completion time. Trusted orchestration
+must enforce the original cutoff around actual I/O and completion, revalidate
+current identity and all independent gates, and abandon interrupted attempts.
+
+Malformed or mismatched input, duplicates, wrong phases, invalid time, expiry,
+and explicit abort latch failure permanently. Codec errors produce
+`CONTEXT_REJECTED`; unexpected validation errors produce `CONTEXT_UNAVAILABLE`
+without private error text. An interruption during context validation latches
+`INTERRUPTED` and propagates the interruption. Later operations raise
+`SESSION_FAILED`, retaining the first reason. No reset, resend, replacement card,
+or changed cutoff is supported. Retained adopted context and release/send flags
+survive failure for investigation. A false send flag means no confirmation was
+recorded; it does not prove no receipt was transmitted.
+
+`confirmed` describes a caller-reported send in this instance. It cannot establish
+supervisor receipt, watchdog arming, continuing health, or execution authority.
+A later `check` can retain confirmed historical state after the cutoff; that is
+not a renewed lease. Already armed watchdog obligations remain independent.
+Recreating a controller loses its history, so it supplies no persistent or
+cross-instance replay protection. Trusted single-owner Python code is required;
+frozen snapshots do not protect against privileged memory modification.
+
+For failure investigation, inspect the first snapshot reason, retained expected
+lifetime, adopted context, and release/send flags privately. Compare them with
+independently retained launch evidence; never repair a failed instance or infer
+external absence from its flags. To check or change this implementation without
+AI, inspect the phase table above against the helper's `_require`, `check`, and
+`_latch` methods, then run the focused tests with the real codec:
+
+```sh
+python -m pytest -q tests/test_nts_child_bootstrap_session.py
+MYPYPATH=tests/support python -m mypy --strict --follow-imports=silent tests/support/nts_child_bootstrap_session.py
+```
+
+Tests cover the complete lifetime comparison, immutable historical snapshots,
+every pending cutoff, malformed input, duplicate operations, unavailable or
+interrupted validation, and the deliberate lack of persistent replay protection.
+Real child integration, delivery, independent identity observation, and actual
+watchdog health integration remain future work. Live NTS collection is not run;
+measurement age remains unknown and approval eligibility remains blocked.
