@@ -1523,3 +1523,70 @@ kernel lifetime observations are not cryptographic sender authentication,
 executable attestation, uninterrupted integrity, trusted clock accuracy, or
 future responsiveness. Live NTS collection remains unstarted, measurement age
 remains unknown, and runtime approval remains blocked.
+
+### Bounded integer poll timeout conversion
+
+`tests/support/nts_poll_timeout.py` implements only the integer-millisecond adapter
+required by the proposed synthetic process contract. No current launcher, fixture,
+watchdog, or runtime path calls it. CI adds this helper to strict type checking
+without removing any existing check. The cross-process bootstrap remains design
+only; this adapter does not implement its waiting loop or launch profile.
+
+`poll_timeout_ms(deadline_ns, now_ns)` accepts an exact positive deadline and an
+exact nonnegative current observation, both within the shared
+bounded integer domain (maximum `2**63 - 1`). Booleans and coercible values are
+invalid. It subtracts the supplied observation using integers and rounds the
+positive remainder down to whole milliseconds. It returns only a relative
+integer timeout in `1..2_147_483_647`, never an absolute or replacement deadline,
+a zero-time poll, or an infinite-wait sentinel. Every returned value satisfies:
+
+`0 < timeout_ms * 1_000_000 <= deadline_ns - now_ns`
+
+The discarded fraction is less than one millisecond. A remaining interval up to
+`2_147_483_647_999_999` nanoseconds can therefore return the maximum supported
+millisecond timeout; at `2_147_483_648_000_000` the whole-millisecond result is out
+of range and rejected. No float conversion, clamping, or wrapping is performed.
+
+| Condition | Fixed payload-free error | Caller obligation |
+| --- | --- | --- |
+| Invalid input type, bound, or zero deadline | `INVALID_TIME_INPUT` | Stop; inspect trusted configuration and observation source |
+| Current observation equals or exceeds deadline | `DEADLINE_EXPIRED` | Fail the pending attempt without renewing its deadline |
+| Positive remainder below one millisecond | `WAIT_UNREPRESENTABLE` | Stop rather than spin, return zero, or round upward |
+| Whole-millisecond timeout exceeds the signed 32-bit ceiling | `POLL_TIMEOUT_OVERFLOW` | Stop; do not clamp or substitute a native sentinel |
+
+The helper reads no clock, retains no state, and performs no I/O, waiting, sleep,
+retry, process action, or approval decision. Repeated calls with backward or stale
+but individually valid observations can produce a larger result: trusted calling
+code must independently enforce its clock domain, freshness, and nondecreasing
+observations. Valid arithmetic does not establish trusted time or healthy clocks.
+
+Future callers retain the original integer deadline and obtain a fresh
+same-domain monotonic observation immediately before each bounded wait. They
+must also check expiry after conversion, before the actual wait, after return,
+and around subsequent validation and acceptance. Time spent between observation
+and the wait can consume the margin; even a safe requested timeout cannot
+prevent scheduler delay or guarantee a timely kernel return. If the original
+boundary has passed, stop rather than accept late data or create a replacement
+budget. Sub-millisecond rejection is deliberate conservative early failure, not
+permission to continue unbounded nonblocking attempts. Cleanup keeps its separate
+explicit allowance and grants no startup extension.
+
+To inspect a failure, compare the fixed error with this table, examine the
+trusted caller's original deadline and observation privately, and check its
+configuration and time-source provenance. Inspect `_integer` in
+`nts_health_protocol` for the input domain and `poll_timeout_ms` for subtraction,
+round-down, and timeout bounds. Independently reproduce the boundary checks with:
+
+```sh
+python -m pytest -q tests/test_nts_poll_timeout.py
+MYPYPATH=tests/support python -m mypy --strict --follow-imports=silent tests/support/nts_poll_timeout.py
+```
+
+The tests cover exact and fractional millisecond boundaries at small and large
+origins, sub-millisecond rejection, equality and expiry, invalid types and bounds,
+the signed timeout ceiling, and a fixed integer grid checking the non-extension
+inequality. They also demonstrate that no cross-call monotonic history exists.
+Correct errors against these bounds, not by rounding upward or returning zero.
+Actual wait integration and its independent completion checks require a separate
+slice. Live NTS collection remains unstarted, measurement age remains unknown,
+and approval eligibility remains blocked.
