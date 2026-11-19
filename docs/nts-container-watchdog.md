@@ -1338,3 +1338,188 @@ python -m pytest -q tests/test_nts_paired_bootstrap_exchange.py
 Correct the test or implementation against the documented phase and packet
 contracts. Do not make a rejection pass by adding a retry, refreshing a cutoff,
 removing independent checks, or treating historical confirmation as authority.
+
+### Restricted synthetic child bootstrap integration contract
+
+Status: design only. PR #88's paired exchange runs in one process; it does not
+implement this process boundary. The current `nts_child_handoff_fixture.py`
+argument layout, failure modes, version-2 report, and seconds-based health proof
+remain unchanged. This contract proposes a separate fixed synthetic child entry
+point and a separately opted-in acceptance harness, not an alternate arbitrary
+command for the existing launcher. The filenames and implementation are future
+work. No real watchdog, container, approval, or tool is operated by this design.
+
+#### Fixed launch profile and independent field origins
+
+The proposed parent accepts only explicit bounded synthetic startup, bootstrap,
+and cleanup durations, with no production defaults. Startup is at most the
+current fixture's ten-second maximum; bootstrap duration cannot exceed startup.
+Cleanup has its own explicit finite allowance and never extends startup or
+permits another handshake. Before resource acquisition or launch, retain one
+host boot, fresh collection reference, monotonic start observation, original
+integer deadline `D`, and bootstrap cutoff `C`, satisfying
+`start_ns < C <= D <= 2**63 - 1`. Compute these boundaries once from the explicit
+integer durations; reject invalid types, overflow, and already-expired bounds.
+All subsequent observations use the same host-monotonic nanosecond domain.
+
+The proposed fixed child argv contains the following exact positional fields
+after the reviewed script path. This is a proposed new profile, not an extension
+silently accepted by the current fixture. Require exact argument count, literal
+profile/version and mode allowlists, and strict bounded canonical decimal
+integers; never accept extra commands, paths, environment configuration, or
+parser fallbacks. Launch only the fixed reviewed interpreter and adjacent child
+with `-I -B`, `shell=False`, `close_fds=True`, and exactly the child endpoint in
+`pass_fds`. Descriptor confinement still assumes trusted host and single ownership.
+
+| Position | Proposed field | Origin and restriction |
+| --- | --- | --- |
+| 1 | `profile` | Exact literal `bootstrap-fixture-v1` |
+| 2–4 | `source_fd`, `parent_fd`, `sentinel_fd` | Parent-owned distinct descriptors above standard streams; only source is inherited |
+| 5–6 | `expected_device`, `expected_inode` | Parent's bounded kernel observation of the source endpoint before launch |
+| 7–8 | `buffer_bytes`, `effective_buffer_limit` | Explicit fixed-profile bounds validated by existing transport |
+| 9 | `expected_boot` | Parent's pre-launch local boot observation; child must compare its own observation |
+| 10 | `collection_id` | Parent-generated once; retained independently of incoming packets |
+| 11–12 | `deadline_ns`, `cutoff_ns` | Exact original `D` and `C`; no packet or progress report can replace them |
+| 13 | `mode` | Explicit finite set of reviewed harmless proof cases; never an executable selector |
+
+For this proposed profile the child mode allowlist is exactly `normal`,
+`stall_before_progress`, `stall_before_receipt`, `malformed_receipt`,
+`mismatched_receipt`, `duplicate_receipt`, `close_before_receipt`, and
+`retain_original`. Stalls remain bounded by the original applicable cutoff;
+they do not sleep indefinitely. Fault modes deliberately violate only the named
+proof condition and cannot count as successful bootstrap. Missing, malformed,
+mismatched, or late parent context is injected by the fixed parent test case,
+not by giving the child a selectable command or a replacement expectation.
+
+The child obtains its own boot through a bounded local kernel read, PID through
+its own process identity, and start ticks through a bounded `/proc/self/stat`
+read. Missing, malformed, changed, or unverifiable evidence fails startup. It
+compares local boot with `expected_boot` before context reception. Its retained
+expected `Lifetime` uses that local boot/PID/start witness, the launch collection,
+exact launch `D`, and fixed all-zero container/owner placeholders matching the
+existing synthetic proof. These placeholders do not establish Docker ownership.
+They are compiled test-profile constants, not packet-selected expectations.
+Construct `ChildBootstrapSession` from this lifetime and retained cutoff before
+reading the context. The received bootstrap token is validated and adopted, not
+used to supply the child's expected identity or waiting limit.
+
+The parent obtains the expected PID from its retained direct-child handle, start
+ticks from independent bounded kernel inspection, and boot from its own retained
+and rechecked local observations. It retains a pidfd before any competing reap.
+After the progress and descriptor gates below, it constructs the exact expected
+context from its own witnesses, the pre-launch collection, placeholders, and `D`.
+Generate one fresh unpredictable bootstrap token only then, freeze that context,
+and construct `BootstrapSession` without replacing `C`. No token goes through
+argv, environment, progress, or a public diagnostic. Actual token unpredictability
+and trusted origins remain responsibilities of the reviewed caller code.
+
+#### Integer time and compatibility boundary
+
+The new profile must use `D` unchanged in the bootstrap context, both controllers,
+and the later health `Lifetime`. It must not reconstruct a nanosecond deadline
+from a floating-point seconds argument. The old fixture remains a separate proof;
+its current `int(deadline * 1_000_000_000)` convention is not evidence that a new
+integer deadline can safely round-trip through seconds.
+
+For any readiness API requiring seconds or milliseconds, derive only the
+remaining duration from a fresh integer observation and the applicable original
+boundary. Never derive a new absolute deadline. Require an exactly checked
+nonnegative wait representation whose rational value does not exceed the
+remaining nanoseconds. For example, integral millisecond waits may round down;
+a seconds float requires an explicit checked conversion, not an assumed safe
+`remaining_ns / 1_000_000_000`. If a positive bounded wait cannot be represented,
+fail the attempt rather than spin, round up, or introduce a replacement budget.
+The future implementation must choose and test this adapter before using it.
+
+Check `now_ns < C` before and immediately after bootstrap waits, packet I/O,
+validation, independent identity queries, and any proposed acceptance. Equality
+is expiry. Time spent constructing or validating a controller is included; a
+previously supplied controller timestamp cannot prove completion was timely.
+Health and normal exit use their separately applicable original `D` and existing
+health-response limits, never a recalculated lifetime. Recheck after readiness
+returns: scheduler delay cannot turn a late result into accepted evidence. These
+checks reject observed lateness; they cannot guarantee scheduling or interrupt a
+blocked kernel/process-creation operation at an exact instant.
+
+#### Required cross-process order
+
+1. Before launch, retain the immutable launch record, fixed boundaries, source
+   endpoint identity, and resource ownership. Record a launch attempt before the
+   possibly blocking creation call. Retain returned child ownership and pidfd;
+   close the parent's spare child endpoint on the successful path.
+2. The child checks excluded-descriptor absence, performs existing checked
+   endpoint adoption, and explicitly closes its inherited original once. It
+   establishes its local lifetime and child controller from independent inputs,
+   then sends the existing exact version-2 progress report under `C`. That report
+   remains an untrusted locator and progress indication, never authority.
+3. The parent retains the process-start witness before receiving progress. Only
+   after progress, perform both full command checks bracketing independent
+   endpoint-identity/flags and original-descriptor-absence observations. Require
+   agreement with the earlier start witness, exact report values and types,
+   unchanged boot, and independent no-exit evidence. Do not restore the early
+   command-publication race or reread until a matching snapshot appears.
+4. Freeze the independently established parent context and token. Release it
+   once through the supervisor controller, perform one whole-packet send, check
+   completion before `C`, and only then report sending to that controller. A
+   full queue or send error stops startup; it never causes another send.
+5. The child receives one context under its existing cutoff, validates and
+   adopts it through the child controller, checks completion time, releases one
+   matching acknowledgement, sends it once, checks completion time again, and
+   only then reports its send. It cannot observe the supervisor's acceptance.
+6. The parent receives one acknowledgement while awaiting it. Before accepting
+   it, require current independent command/start, boot, and retained-child exit
+   checks against its frozen expectations. Verify exact receipt equality and
+   timely completion. Repeat the required post-exchange identity/exit and time
+   gates before admitting the next synthetic protocol phase. No packet selects
+   the PID, reference, command, or endpoint that those checks inspect.
+7. Only after its own confirmed bootstrap and all current independent gates may
+   the parent issue the existing one bounded synthetic health challenge for the
+   exact same lifetime. The child answers at most that one challenge after its
+   successful acknowledgement-send path, then follows the fixed exit sequence.
+   An extra context or receipt is not a health message and must fail rather than
+   be buffered or reinterpreted. Independent exit and endpoint cleanup remain
+   required before the overall proof can pass. Health still grants no execution
+   authority; this synthetic profile never arms a watchdog or starts a container.
+
+#### Failure, cleanup, and future proof obligations
+
+A live empty queue can return to bounded readiness waiting under the original
+cutoff; this is not an immediate proof of failure or permission to busy-retry.
+Missing progress/context/receipt expires without new input. Wrong schema, values,
+phase, token, identity, duplicate packet, peer closure, unavailable evidence, or
+expired bound stops the attempt. Lost confirmation remains ambiguous even when
+one side completed its local send. Retain both sides' historical references;
+reconciliation cannot authorize late continuation, resend, replacement token,
+replacement process, or controller recreation for the failed attempt.
+
+On every path, stop/reap only the owned synthetic child through retained lifetime
+references, close only owned endpoints and pidfd/sentinel resources, and verify
+process exit and descriptor release independently. The original startup deadline
+never expands to include cleanup. If launch failed without a process handle,
+record the unresolved launch outcome and use independently authorized ownership
+reconciliation; no handle does not prove no child or residue exists. Do not
+signal an arbitrary discovered PID or claim successful cleanup from an exception.
+If cleanup cannot be verified within its allowance, preserve that uncertainty and
+fail the proof. The independent obligations of any already-armed watchdog are
+unchanged; this fixture itself cannot arm one.
+
+Future acceptance must show exact context/receipt agreement across the actual
+process boundary, checked adoption and original release, unchanged independent
+lifetime and command observations, timely completion under original `C`/`D`,
+one synthetic health exchange, independently observed exit, and owned-resource
+cleanup. Negative proofs must cover missing or late progress/context/receipt,
+queued receipt after cutoff, malformed/mismatched packets, duplicate or wrong-phase
+input, full-queue send, peer closure, changed/unavailable identity evidence, and a
+retained spare descriptor masking closure. The retained-spare case passes only
+as a demonstrated rejection, never as accepted bootstrap. Integer-to-wait tests
+must cover rounding edges, equality, overflow, and no remaining representable
+wait without sleeps or retries that change the boundary.
+
+These are implementation and test obligations, not results established by this
+document. Use the existing fixture and harness for comparison, then inspect the
+codec, both session helpers, transport, and paired-exchange tests against each
+ordered gate above. Keep actual launch evidence private. Source association and
+kernel lifetime observations are not cryptographic sender authentication,
+executable attestation, uninterrupted integrity, trusted clock accuracy, or
+future responsiveness. Live NTS collection remains unstarted, measurement age
+remains unknown, and runtime approval remains blocked.
