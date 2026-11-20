@@ -1590,3 +1590,95 @@ Correct errors against these bounds, not by rounding upward or returning zero.
 Actual wait integration and its independent completion checks require a separate
 slice. Live NTS collection remains unstarted, measurement age remains unknown,
 and approval eligibility remains blocked.
+
+### One-shot integer-deadline readiness wait
+
+`tests/support/nts_readiness_wait.py` connects the integer timeout adapter to one
+native poll invocation. Existing wait paths, launchers, and fixtures do not call
+it. CI adds its strict type-check registration and retains all existing checks.
+This is an internal readiness primitive, not a receive loop or bootstrap runner.
+
+`wait_readable_once(fd, deadline_ns)` borrows one trusted, stable caller-owned
+descriptor above standard streams, bounded by `2**31 - 1`, and an exact positive
+integer deadline bounded by `2**63 - 1`. It never opens, duplicates, replaces, or
+closes that descriptor. The caller must prevent concurrent close/reuse and keep
+its independent lifetime and ownership evidence; a matching numeric FD alone is
+not an identity check. Unsupported poll semantics fail without a fallback.
+
+The helper takes an initial local monotonic observation, registers only fixed
+input and closure/error interests on a new local poll object, and takes a fresh
+observation after setup. It calls the existing `poll_timeout_ms` once, then checks
+time again before invoking poll. If elapsed conversion time makes the prepared
+requested wait exceed the last observed remainder, it raises `STALE_TIMEOUT`;
+it does not recalculate repeatedly until a wait fits. Sub-millisecond remainder
+and overflow retain the existing converter's explicit errors.
+
+There is at most one Python-level `poll(timeout_ms)` call, using a positive bounded
+integer millisecond timeout. This counts helper invocations, not interpreter or
+kernel internal attempts, and establishes no hard wait-time bound. The helper checks time immediately after poll returns and
+again after event validation. Within-call readings must be exact bounded
+nonnegative integers, nondecreasing, and strictly before the retained deadline.
+Equality is expiry even if readable input was reported. No wait failure, empty
+result, malformed event, or interruption creates a retry or replacement deadline.
+
+| Outcome or error | Meaning and required interpretation |
+| --- | --- |
+| `input_ready` | One exact input-readiness event passed validation before the final time observation; no packet was read or accepted |
+| `no_input` | The sole poll returned an empty list while observations still preceded the deadline; no message or continuing eligibility is established |
+| `INVALID_DESCRIPTOR`, `INVALID_DEADLINE` | Invalid supplied reference/configuration; no coercion or standard-stream polling |
+| `UNSUPPORTED_PLATFORM` | Required native poll operations/flags are missing; no alternative wait is substituted |
+| `CLOCK_UNAVAILABLE`, `INVALID_TIME` | A clock query failed or a reading was invalid/backward; no readiness result |
+| `DEADLINE_EXPIRED`, `STALE_TIMEOUT` | Observed time exhausted the boundary or the calculated wait no longer fits; stop the attempt |
+| `POLL_UNAVAILABLE` | Setup or the single poll raised an ordinary exception, including `InterruptedError`; raw host errors are suppressed and no retry occurs |
+| `INVALID_POLL_RESULT` | Result shape, descriptor, or flags were unexpected; no masking, buffering, or invented input |
+| `POLL_EVENT_ERROR` | Closure/error/invalid-FD flags occurred, including alongside readable input; error takes precedence |
+| Existing `PollTimeoutError` reasons | Converter rejection propagates unchanged; inspect the integer timeout section above |
+
+The native result must be an exact list containing zero or one exact two-item
+tuple. A present event must contain the requested exact integer FD and exact
+integer flags. `POLLHUP`, `POLLERR`, and `POLLNVAL` reject the wait before input
+can be admitted. An otherwise valid event must be exactly `POLLIN`; zero, unknown,
+and unsupported flags are rejected. A packet can disappear or prove invalid after
+readiness, so future callers must still perform bounded receive and all protocol
+checks under the original cutoff. Readiness never authenticates a peer.
+
+Operator interruptions such as `KeyboardInterrupt` propagate without retry. This
+stateless helper owns no descriptor or process cleanup duty; caller ownership
+remains unchanged even on failure. It retains no lifecycle or cross-call clock
+history. Future callers must stop/reconcile their own attempt and independently
+verify any required cleanup rather than infer it from a return or exception.
+
+Time observations are local host assumptions, not trusted-time health evidence.
+The final pre-poll check cannot eliminate the scheduling gap between that check
+and entry into the kernel. The timeout cannot guarantee an exact return instant;
+post-poll and post-validation checks reject observed lateness. Likewise a process
+pause after return can make readiness stale. Future callers must freshly recheck
+the original deadline before any receive, validation, or acceptance and preserve
+all independent process, pidfd exit, ownership, controller, and authorization gates.
+This adapter watches one FD and does not independently observe child exit.
+
+Focused tests inject deterministic observations and poll faults for setup and
+conversion delays, every time-check boundary, invalid and backward readings,
+error precedence, malformed results, and one-call/no-retry behavior. Separate
+native packet-socket tests keep actual poll/send/receive operations and verify
+that readiness leaves the packet unread and the borrowed FD open. Those native
+cases deliberately use synthetic time readings; they are not scheduling or
+actual elapsed-time proofs. Their fixture closes both test-owned sockets and
+independently requires `EBADF` for both saved FD numbers after closure, without
+intervening descriptor acquisition. Existing native transport tests stay unchanged.
+
+To investigate failures, inspect the fixed reason, the trusted caller's original
+deadline, and its clock/descriptor provenance privately. Inspect `_observe` for
+clock checks, `wait_readable_once` for registration and event handling, and the
+existing converter for integer timeout failures. Independently rerun:
+
+```sh
+python -m pytest -q tests/test_nts_readiness_wait.py
+MYPYPATH=tests/support python -m mypy --strict --follow-imports=silent tests/support/nts_readiness_wait.py
+```
+
+Correct the failed boundary against this contract, not by accepting unknown flags,
+retrying interrupted operations, rounding up, closing a borrowed descriptor, or
+renewing startup time. Real child bootstrap and watchdog integration remain open.
+Live NTS collection remains unstarted, measurement age remains unknown, and
+approval eligibility remains blocked.
