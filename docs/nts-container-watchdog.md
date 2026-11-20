@@ -1682,3 +1682,85 @@ retrying interrupted operations, rounding up, closing a borrowed descriptor, or
 renewing startup time. Real child bootstrap and watchdog integration remain open.
 Live NTS collection remains unstarted, measurement age remains unknown, and
 approval eligibility remains blocked.
+
+### Readiness-to-bootstrap acceptance proof
+
+`tests/test_nts_readiness_bootstrap.py` composes the existing readiness helper,
+private packet transport, actual codec, and both bootstrap controllers in one
+process. Only this test module and this guidance change. No existing helper,
+wait path, launcher, fixture, interface, or CI step is changed.
+
+The success case sends one context, observes real native readiness, receives one
+complete bounded packet, checks the original cutoff, and invokes the real child
+validator. After an independent completion-time check, the child releases and
+sends one receipt. The supervisor separately observes readiness, receives the
+packet, validates it against retained expectations, and passes its own final
+time check. Byte equality, adoption, reported sending, controller acceptance, and
+overall test-step completion remain distinct facts.
+
+The test-only `receive_and_accept` composition is not a reusable production
+orchestration API. It performs one readiness call and at most one transport
+receive for each step, checks the original cutoff after readiness and receipt,
+passes a fresh observation to the existing controller, and checks time again
+after validation returns. Only that final check adds the step to the test's
+completed set. No failure causes another poll, receive, send, context, or budget.
+This conservative test path stops on `no_input`; it does not implement a future
+bounded event loop.
+
+Targeted fault cases inject a pause immediately after genuine readiness, after
+actual packet receipt, and after actual controller validation. The first two must
+prevent the next acceptance gate. The last case deliberately shows a controller
+retaining earlier supplied-time adoption or acknowledgement history while the
+test's overall completion gate rejects expiry. Never erase that history or use
+it to authorize delayed continuation. In particular, child adoption before an
+expired completion check does not issue a receipt in this test path.
+
+Malformed and mismatched context/receipt packets are sent through the native
+channel. They can be readable but must fail real codec/controller checks. Native
+oversized and ancillary-FD packets deliberately bypass the ordinary sender's
+validation to exercise the receiving transport. Actual polling still precedes
+`PACKET_TRUNCATED` or `ANCILLARY_REJECTED`; no remainder is assembled or retried,
+and no such bytes reach protocol acceptance. Peer closure alongside readable
+input must fail the readiness error gate before any receipt is accepted.
+
+Another targeted receive fault drains a real packet after readiness and then
+performs an actual empty receive, which raises `WouldBlock`. This models
+interference that violates normal single-owner expectations; it is not a
+permitted second consumer in the architecture. The failed test path fabricates
+no input and performs no retry. Empty-poll cases include both a native empty
+channel and targeted early-empty output with independently verified queued bytes
+left unread. These outcomes establish no complete or trusted message.
+
+The fixture owns both endpoints and a bounded ancillary source descriptor. It
+closes all of them after each success or rejection and independently requires
+`EBADF` on the saved numbers without intervening descriptor acquisition. The
+ancillary rejection cases also compare process descriptor counts around the
+receive-time rejection: the failed receiving endpoint is closed and no hidden
+received duplicate remains. The ancillary source itself must still be open until
+its owner closes it. Cleanup uncertainty fails the test rather than becoming an
+asserted success.
+
+All lifetime fields, tokens, and clock observations are synthetic. Native cases
+keep actual sockets, poll, sends, and receives, but they do not demonstrate real
+elapsed-time enforcement or scheduling guarantees. Deterministic boundary faults
+use no timing-sensitive sleeps. Passing this proof establishes compatibility
+under controlled conditions only, not independent child identity, sender
+authentication, trusted-time health, or execution authority. A real integration
+still needs the independently enforced lifetime, exit, confinement, and original
+deadline gates defined above.
+
+For independent diagnosis, inspect the first failing gate and each retained
+controller snapshot privately. Readiness failures belong to `nts_readiness_wait`,
+packet/truncation/ancillary failures to `nts_health_transport`, and schema/phase
+failures to the codec or relevant session helper. Inspect the test's final
+`before_cutoff` gate separately from a controller's historical state. Rerun:
+
+```sh
+python -m pytest -q tests/test_nts_readiness_bootstrap.py
+```
+
+Correct a failed contract or test setup without accepting malformed data,
+removing independent gates, retrying partial input, or extending a deadline.
+Real child bootstrap and watchdog integration remain open. Live NTS collection
+remains unstarted, measurement age remains unknown, and approval eligibility
+remains blocked.
