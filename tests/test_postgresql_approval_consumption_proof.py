@@ -134,6 +134,95 @@ def simulate_confirmed_fixture(reader, approval_id, execution_id):
     }  # Check the real answer.
 
 
+@pytest.mark.parametrize(  # Isolate the three faults with separate seeded approvals.
+    "mode,approval_id,execution_id",  # Keep each fault and its references together.
+    [  # These approval IDs match only the new disposable fixture rows.
+        (  # Hide the reported pair without changing the actual committed records.
+            "missing",  # Exercise the existing gate with no reported rows.
+            UUID("10000000-0000-4000-8000-000000000001"),  # Missing-result approval.
+            UUID("20000000-0000-4000-8000-000000000001"),  # Its exact execution.
+        ),
+        (  # Report an audit reference that differs from the committed execution.
+            "mismatch",  # Exercise the existing matching-pair assertion.
+            UUID("10000000-0000-4000-8000-000000000002"),  # Mismatched-result approval.
+            UUID("20000000-0000-4000-8000-000000000002"),  # Its true execution.
+        ),
+        (  # Fail observation delivery after a successful real reader query.
+            "unavailable",  # Model an error at the verification boundary.
+            UUID("10000000-0000-4000-8000-000000000003"),  # Reader-error approval.
+            UUID("20000000-0000-4000-8000-000000000003"),  # Its true execution.
+        ),
+    ],
+    ids=["missing", "mismatch", "unavailable"],  # Name the failed boundary in pytest.
+)
+def test_verification_failure_preserves_consumption_without_invocation(
+    proof_database,  # Retain the separately authenticated writer and reader roles.
+    simulator_calls,  # Count actual fixed simulator entries for this scenario.
+    monkeypatch,  # Restore the real reader before investigating saved state.
+    mode,  # Choose one fixed observation fault, never a caller-selected action.
+    approval_id,  # Keep each case separate from earlier committed proofs.
+    execution_id,  # Require this reference in both saved records.
+):
+    """Reject bad reader evidence without undoing the acknowledged consumption."""
+    writer, reader = proof_database  # Preserve the existing role and database checks.
+    with proof_connection(writer) as connection:  # Reuse the existing commit operation.
+        assert competing_claim(connection, approval_id, execution_id) == 1  # Ack.
+    committed = [  # Keep this exact pair through the fault and later investigation.
+        ("consumed", execution_id, execution_id, "consumed")  # Same attempt in both.
+    ]
+    original_reader = observed  # Retain the real independent query outside the fault.
+    observations = []  # Detect a skipped fault boundary or an automatic read retry.
+
+    def faulty_reader(actual_reader, actual_approval):
+        """Alter only the observation delivered to the unchanged verification gate."""
+        assert actual_reader == reader  # Require the intended reader role context.
+        assert actual_approval == approval_id  # Inspect exactly this scenario's row.
+        assert (
+            original_reader(actual_reader, actual_approval) == committed
+        )  # Saved pair.
+        observations.append(mode)  # Count entry only after the real query succeeds.
+        if mode == "missing":  # Hide evidence at the observation boundary only.
+            return []  # Leave all actual database records untouched.
+        if mode == "mismatch":  # Supply inconsistent reported execution references.
+            return [  # Only the fabricated audit execution differs from the real pair.
+                ("consumed", execution_id, SECOND_EXECUTION, "consumed")  # Mismatch.
+            ]
+        raise psycopg.OperationalError(  # The third case fails observation delivery.
+            "synthetic verification unavailable"  # Exclude private connection details.
+        )
+
+    expected_error = (  # Mismatches assert; the helper must propagate reader errors.
+        psycopg.OperationalError if mode == "unavailable" else AssertionError
+    )
+    with monkeypatch.context() as injected:  # Limit the fault to this stopped attempt.
+        injected.setitem(  # Patch the reader used by the existing verification helper.
+            globals(),  # Leave the database and reader privilege grants unchanged.
+            "observed",  # Intercept only the independent observation boundary.
+            faulty_reader,  # Never replace the matching-pair verification gate.
+        )
+        with pytest.raises(expected_error) as failure:  # Failure must prevent dispatch.
+            simulate_confirmed_fixture(  # Exercise the existing fixed invocation path.
+                reader,  # Read through the scenario's independent role context.
+                approval_id,  # Verify the original consumed approval only.
+                execution_id,  # Preserve the execution reference from the normal ack.
+            )
+    assert observations == [mode]  # One failed observation, without automatic retries.
+    if mode == "unavailable":  # Ensure the expected injected reader error propagated.
+        assert str(failure.value) == "synthetic verification unavailable"  # Reason.
+    assert simulator_calls == []  # Verification failure cannot invoke the simulator.
+    assert observed(reader, approval_id) == committed  # Investigation only.
+    with proof_connection(writer) as later_writer:  # New reuse probe.
+        changed = competing_fixture_attempt(  # Retain the probe invocation branch.
+            later_writer,  # Do not resume the earlier attempt or its transaction.
+            reader,  # A mistaken winner would independently inspect its new pair.
+            approval_id,  # The original approval must remain consumed.
+            SECOND_EXECUTION,  # A different execution cannot reopen spent approval.
+        )
+        assert changed == 0  # Require no row changes and no new consumption.
+    assert observed(reader, approval_id) == committed  # Preserve both original records.
+    assert simulator_calls == []  # No resumed dispatch.
+
+
 def competing_fixture_attempt(connection, reader, approval_id, execution_id):
     """Exercise the existing claim operation before the test's invocation branch."""
     changed = competing_claim(
