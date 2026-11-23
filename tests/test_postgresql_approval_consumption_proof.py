@@ -9,6 +9,8 @@ import psycopg
 import pytest
 from psycopg.errors import CheckViolation
 
+from gateway import fixture_simulator  # Exercise only the fixed synthetic simulator.
+
 CONTENTION_APPROVAL = UUID("11111111-1111-4111-8111-111111111111")
 ROLLBACK_APPROVAL = UUID("22222222-2222-4222-8222-222222222222")
 FIRST_EXECUTION = UUID("33333333-3333-4333-8333-333333333333")
@@ -59,6 +61,24 @@ def proof_connection(dsn, *, autocommit=False):
     )
 
 
+@pytest.fixture  # Keep each scenario's invocation evidence independent.
+def simulator_calls(monkeypatch):  # Observe calls without replacing fixture behavior.
+    """Count actual fixed-simulator entries, not claims of successful dispatch."""
+    calls = []  # A fresh list prevents other proof cases from supplying evidence.
+    original = fixture_simulator.simulate_read_item  # Preserve the real fixture code.
+
+    def recorded(item_id):  # Intercept only this test's fixed simulator boundary.
+        calls.append(item_id)  # Record entry even if the simulator later fails.
+        return original(item_id)  # Still execute the existing deterministic fixture.
+
+    monkeypatch.setattr(  # Restore the simulator automatically after this scenario.
+        fixture_simulator,  # Observe the existing module, not a dispatch registry.
+        "simulate_read_item",  # Replace only the fixed fixture entry for this test.
+        recorded,  # Keep the real implementation behind the observation wrapper.
+    )
+    return calls  # Assertions inspect entries independently of returned payloads.
+
+
 def claim(connection, approval_id, execution_id):
     """Update only an approval that is still available for use."""
     cursor = connection.execute(
@@ -102,6 +122,30 @@ def competing_claim(connection, approval_id, execution_id):
     return changed
 
 
+def simulate_confirmed_fixture(reader, approval_id, execution_id):
+    """Check committed proof rows before one test-only fixed fixture invocation."""
+    assert observed(reader, approval_id) == [  # Read through the separate proof role.
+        ("consumed", execution_id, execution_id, "consumed")  # Require both references.
+    ]
+    result = fixture_simulator.simulate_read_item(1)  # Use only the fixed sample item.
+    assert result == {
+        "item_id": 1,  # Match the fixed input rather than another synthetic item.
+        "label": "Synthetic item 1",  # Require the existing deterministic payload.
+    }  # Check the real answer.
+
+
+def competing_fixture_attempt(connection, reader, approval_id, execution_id):
+    """Exercise the existing claim operation before the test's invocation branch."""
+    changed = competing_claim(
+        connection,  # Reuse the existing transaction and its commit handling.
+        approval_id,  # Claim exactly the fixture row selected by this scenario.
+        execution_id,  # Bind the attempt to its existing execution reference.
+    )
+    if changed == 1:  # A losing claim must not reach the synthetic invocation branch.
+        simulate_confirmed_fixture(reader, approval_id, execution_id)  # No retry path.
+    return changed  # Preserve the contender's independently checked claim outcome.
+
+
 def revoke(connection, approval_id):
     """Withdraw an approved row or report an already committed consumption."""
     # Target the same row and check the same available state as a claim.
@@ -137,7 +181,7 @@ def wait_for_blocking(observer, first, second):
     pytest.fail("PostgreSQL did not report the competing lock wait")
 
 
-def test_competing_claims_commit_only_one_consumption(proof_database):
+def test_competing_claims_commit_only_one_consumption(proof_database, simulator_calls):
     writer, reader = proof_database
     with (
         proof_connection(writer) as first,
@@ -150,10 +194,20 @@ def test_competing_claims_commit_only_one_consumption(proof_database):
             assert claim(first, CONTENTION_APPROVAL, FIRST_EXECUTION) == 1
             write_event(first, CONTENTION_APPROVAL, FIRST_EXECUTION)
             contender = worker.submit(
-                competing_claim, second, CONTENTION_APPROVAL, SECOND_EXECUTION
+                competing_fixture_attempt,  # Exercise the losing invocation branch.
+                second,  # Retain the separate transaction and real row contention.
+                reader,  # Independently inspect committed evidence before any call.
+                CONTENTION_APPROVAL,  # Both attempts target the same approval.
+                SECOND_EXECUTION,  # Keep the contender's execution reference distinct.
             )
             wait_for_blocking(observer, first, second)
+            assert simulator_calls == []  # Neither uncommitted attempt may invoke.
             first.commit()
+            simulate_confirmed_fixture(  # Invoke only after commit returned normally.
+                reader,  # Check committed rows through the independent reader.
+                CONTENTION_APPROVAL,  # Inspect the approval contested by both writers.
+                FIRST_EXECUTION,  # Require the winning execution in both records.
+            )
         finally:
             # Release the first transaction before waiting for the worker to exit.
             first.rollback()
@@ -163,22 +217,33 @@ def test_competing_claims_commit_only_one_consumption(proof_database):
     assert observed(reader, CONTENTION_APPROVAL) == [
         ("consumed", FIRST_EXECUTION, FIRST_EXECUTION, "consumed")
     ]
+    assert simulator_calls == [1]  # The losing contender must not add another call.
 
 
-def test_failed_audit_insert_rolls_back_consumption(proof_database):
+def test_failed_audit_insert_rolls_back_consumption(proof_database, simulator_calls):
     writer, reader = proof_database
     with proof_connection(writer) as connection:
         # Confirm the update ran before triggering the named audit constraint.
         assert claim(connection, ROLLBACK_APPROVAL, ROLLBACK_EXECUTION) == 1
         with pytest.raises(CheckViolation) as failure:
             write_event(connection, ROLLBACK_APPROVAL, ROLLBACK_EXECUTION, "invalid")
+            connection.commit()  # Audit rejection must prevent reaching this commit.
+            simulate_confirmed_fixture(  # An audit failure must bypass this branch.
+                reader,  # A successful branch would require committed evidence.
+                ROLLBACK_APPROVAL,  # Isolate the failed-audit scenario.
+                ROLLBACK_EXECUTION,  # Compare the exact attempted execution.
+            )
         assert failure.value.diag.constraint_name == "proof_consumption_event_type"
         connection.rollback()
 
     assert observed(reader, ROLLBACK_APPROVAL) == [("approved", None, None, None)]
+    assert simulator_calls == []  # Failed persistence cannot release a fixture call.
 
 
-def test_revocation_committing_first_blocks_consumption(proof_database):
+def test_revocation_committing_first_blocks_consumption(
+    proof_database,  # Retain the isolated writer and reader role checks.
+    simulator_calls,  # Observe whether the revoked attempt enters the simulator.
+):
     writer, reader = proof_database
     with (
         proof_connection(writer) as first,
@@ -189,7 +254,11 @@ def test_revocation_committing_first_blocks_consumption(proof_database):
         try:
             assert revoke(first, REVOCATION_FIRST_APPROVAL) == "revoked"
             contender = worker.submit(
-                competing_claim, second, REVOCATION_FIRST_APPROVAL, BLOCKED_EXECUTION
+                competing_fixture_attempt,  # Observe the rejected invocation branch.
+                second,  # Preserve the blocked transaction used by the existing proof.
+                reader,  # A successful branch would inspect the committed pair.
+                REVOCATION_FIRST_APPROVAL,  # Revoke exactly the approval being claimed.
+                BLOCKED_EXECUTION,  # Identify the rejected execution attempt.
             )
             wait_for_blocking(observer, first, second)
             first.commit()
@@ -202,6 +271,7 @@ def test_revocation_committing_first_blocks_consumption(proof_database):
     assert observed(reader, REVOCATION_FIRST_APPROVAL) == [
         ("revoked", None, None, None)
     ]
+    assert simulator_calls == []  # Earlier revocation blocks the fixture invocation.
 
 
 def test_consumption_committing_first_makes_revocation_too_late(proof_database):
@@ -243,7 +313,10 @@ def commit_with_lost_acknowledgement(connection):
     raise psycopg.OperationalError("synthetic lost commit acknowledgement")
 
 
-def test_lost_commit_acknowledgement_preserves_consumption(proof_database):
+def test_lost_commit_acknowledgement_preserves_consumption(
+    proof_database,  # Reconcile with the separately authenticated proof reader.
+    simulator_calls,  # Retain a call observation through reconciliation.
+):
     writer, reader = proof_database
     with proof_connection(writer) as connection:
         # Commit the claim and its audit record in the same transaction.
@@ -253,17 +326,24 @@ def test_lost_commit_acknowledgement_preserves_consumption(proof_database):
             psycopg.OperationalError, match="^synthetic lost commit acknowledgement$"
         ):
             commit_with_lost_acknowledgement(connection)
+            simulate_confirmed_fixture(  # Lost confirmation must prevent this call.
+                reader,  # A successful branch would independently read the pair.
+                LOST_ACK_APPROVAL,  # Preserve the original approval reference.
+                LOST_ACK_EXECUTION,  # Never invent a replacement execution identity.
+            )
         # Cleanup after the error cannot undo an already committed transaction.
         connection.rollback()
 
     # Reconcile with the read-only role, independently of the failed call.
     committed = [("consumed", LOST_ACK_EXECUTION, LOST_ACK_EXECUTION, "consumed")]
     assert observed(reader, LOST_ACK_APPROVAL) == committed
+    assert simulator_calls == []  # Saved evidence alone does not resume dispatch.
 
     # A separate test writer probes whether the spent approval can be reused.
     with proof_connection(writer) as later_writer:
         assert claim(later_writer, LOST_ACK_APPROVAL, LATER_CLAIM_EXECUTION) == 0
     assert observed(reader, LOST_ACK_APPROVAL) == committed
+    assert simulator_calls == []  # The rejected reuse probe must not resume dispatch.
 
 
 def consume_with_scope_authority(connection, approval_id, execution_id):
