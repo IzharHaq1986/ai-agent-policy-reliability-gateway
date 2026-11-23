@@ -39,11 +39,39 @@ models the saved-state/failed-confirmation boundary; it does not reproduce a
 network outage. The later reuse probe tests single-use persistence and is not an
 automatic recovery procedure.
 
+## Independent verification failures
+
+Three additional parameter cases consume separate seeded fixture approvals with
+normal commit acknowledgement. Each then injects a fault into the reader result
+delivered to the existing verification helper. Before delivering the fault, the
+injection performs the real independent query and checks the committed pair.
+It does not alter the database records or replace the verification gate.
+
+| Injected observation | Expected rejection | Evidence after the stopped attempt |
+| --- | --- | --- |
+| No matching rows reported | The existing matching-pair assertion fails | Zero simulator calls; actual consumption and matching event remain committed |
+| Another execution reported in the audit reference | The existing matching-pair assertion fails | Zero simulator calls; the real saved execution references stay unchanged |
+| Synthetic reader error | The existing helper propagates the error | Zero simulator calls; the committed pair remains available for investigation |
+
+Each case checks that exactly one injected reader observation occurred. After
+restoring the reader, reconciliation checks the real rows without invoking the
+simulator. A new claim against the same approval changes zero rows and makes no
+simulator call. The approval remains spent; reconciliation does not resume the
+failed attempt. The existing successful contention scenario still provides the
+one-call control after normal acknowledgement and matching independent evidence.
+
+These injected observations do not reproduce replication lag, a network outage,
+or identity compromise. The synthetic unavailable-reader error occurs after a
+successful real query, at the observation boundary. Missing and mismatched
+results are deliberately fabricated, not claims about PostgreSQL returning
+uncommitted or stale rows. Inspect the injection and the retained real-reader
+query separately when diagnosing a failure.
+
 ## Limits
 
 These tests prove the explicitly written test sequence, not an integrated runtime
-controller. The other existing consumption and scope-revocation proofs remain
-unchanged. A successful fixture consumption is not human authorization.
+controller. The existing consumption and scope-revocation proofs retain their
+assertions. A successful fixture consumption is not human authorization.
 
 This fixture has no complete protected-request binding, verified human identity,
 independent approver, or trusted-time evidence. It does not implement the full

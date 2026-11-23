@@ -51,4 +51,11 @@ VALUES
     ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'approved', 'control-scope'),
     ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'approved', 'revocation-scope');
 
+-- Isolate committed approvals used by the three reader-boundary fault cases.
+INSERT INTO approval_consumption_proof.approvals (approval_id, state)
+VALUES
+    ('10000000-0000-4000-8000-000000000001', 'approved'), -- Missing reported result.
+    ('10000000-0000-4000-8000-000000000002', 'approved'), -- Wrong reported execution.
+    ('10000000-0000-4000-8000-000000000003', 'approved'); -- Unavailable verification.
+
 COMMIT;
