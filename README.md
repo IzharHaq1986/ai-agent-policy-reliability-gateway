@@ -32,77 +32,93 @@ Additional infrastructure requires a demonstrated requirement.
 
 ## Current status
 
-The repository includes a synthetic deterministic policy core and
-1788 tests: 56 policy tests, 43 API tests,
-91 audit-builder tests, 30 API audit-integration tests,
-42 JSON-lines receiver tests, 13 API/receiver composition tests,
-26 PostgreSQL receiver unit tests, 7 PostgreSQL integration tests,
-12 API/PostgreSQL composition tests, 48 evaluation tests,
-23 evaluation CLI tests, 7 CLI failure-path tests,
-12 artifact-generation tests, 9 artifact-identity tests,
-16 artifact CLI acceptance tests, 8 artifact CLI process tests,
-20 fixture simulator tests, 156 execution-event contract tests,
-21 execution-event receiver tests, 59 fixture-result tests,
-78 request-binding contract tests, 79 request-snapshot tests,
-45 paired-receiver unit tests, 8 paired-receiver integration tests,
-52 execution-receiver unit tests, 19 execution-receiver integration tests,
-237 execution-result contract tests, 73 simulator-orchestration unit tests,
-17 simulator-orchestration integration tests, 15 API-startup unit tests,
-7 API-startup PostgreSQL integration tests,
-10 audited API real-process tests,
-114 synthetic provenance contract tests,
-74 execution-evidence contract tests, 34 simulator-evidence unit tests,
-12 simulator-evidence PostgreSQL integration tests,
-19 PostgreSQL acceptance startup-diagnostic tests,
-125 synthetic approval-request descriptor tests,
-58 approval state transition tests,
-11 exact approval request match tests,
-and 2 PostgreSQL approval consumption proof tests.
-CI covers repository hygiene, lint, formatting,
-strict source typing, and the full test suite with warnings treated as errors.
+The synthetic policy, audited HTTP evaluation, and explicit fixed-simulator
+execution paths are implemented within the boundaries below. The approval-backed
+version 1 path is the selected target, not an implemented capability. Passing
+component tests does not establish end-to-end approval or production readiness.
 
-The synthetic approval-request descriptor validates a request ID and
-the fixed fixture request fields. It grants no approval and is not
-connected to the HTTP API or executor.
+| Area | Implemented behavior | Remaining boundary |
+| --- | --- | --- |
+| Policy and HTTP | Deterministic default-deny evaluation; one server-configured Bearer credential maps to the fixed principal; the explicitly audited startup requires policy-audit delivery | HTTP remains non-executing. The original startup has optional audit delivery. This credential does not identify an independent human approver. |
+| Explicit simulator | An opt-in Python executor invokes only the fixed synthetic simulator after internal policy evaluation and required policy/binding and start-audit acknowledgements; terminal evidence gates returned outcomes | Not connected to HTTP or startup. This existing synthetic read requires no per-request approval and is separate from the future approval-required path. |
+| Audit and evidence | PostgreSQL policy decisions, request bindings, execution events, result validation, and synthetic evidence packaging | Synthetic provenance is unsigned; consistency does not establish authentic origin, independent freshness, or actual invocation. |
+| Protected request context | Request-instance storage protected against application-role edits/deletion, policy-event links, an internal request writer, and a receiver that compares protected values and commits decision/binding/link together | These internal components do not authenticate requester identity or implement approval-backed runtime orchestration. |
+| Pending approval storage | Migration 007 stores pending revision 1 with matching creation evidence; deferred constraints prevent either half from committing alone | No runtime pending creation operation, human decision persistence, consumption operation, or complete approval lifecycle is enabled. |
+| Supervision and timing | Separate bounded capture, evidence serialization/publication, container-watchdog, identity, protocol, transport, timeout, and readiness building blocks have focused proofs | Full watchdog health supervision, the proposed cross-process bootstrap context exchange, and a live NTS controller remain unimplemented. |
 
-The exact approval request match helper checks the request ID and
-captured details against values supplied separately by trusted code.
-A match confirms consistency and grants no approval or permission to run.
+The synthetic approval-request descriptor and exact-match helper validate the
+request ID and captured values against separately supplied expected context.
+They grant no approval and are not wired into the HTTP API or executor. The
+standalone approval state helper checks allowed state pairs only; it changes no
+record and checks neither identity nor expiry.
 
-The standalone approval state check reports whether a proposed move
-appears in the lifecycle rules. It does not change a record, check
-identity or expiry, or authorize execution.
+Protected request and link storage is defined in migrations 004–006. The
+[protected request writer](src/gateway/postgresql_protected_request_writer.py)
+validates input before connecting and acknowledges success only after commit
+and connection closure. The
+[protected binding receiver](src/gateway/postgresql_protected_binding_receiver.py)
+checks the exact saved request and ALLOW binding before atomically saving the
+policy decision, request binding, and protected request link. Failed confirmation
+can coexist with saved records; neither component automatically retries.
+Migration 007 adds pending storage only, not authenticated runtime approval.
 
-Two integration tests use disposable PostgreSQL tables to check a
-proposed approval consumption transaction. After PostgreSQL reports
-one worker waiting on another, a separate reader verifies that only
-one claim and its matching audit event were saved. A second test
-forces the audit insert to fail and verifies that rollback leaves
-the approval unused. These tests cover the fixture transaction only;
-they do not implement approval consumption or test revocation ordering
-or lost commit acknowledgement.
+[Disposable PostgreSQL consumption proofs](tests/test_postgresql_approval_consumption_proof.py)
+cover competing claims, audit-insert rollback, both approval-revocation orders,
+lost commit confirmation, active scope authority, and scope-authority revocation
+before consumption. Separate reader observations verify the exercised saved
+states and audit evidence. These tests use fixture tables; they do not implement
+runtime approval consumption, authority administration, or approval-backed dispatch.
 
-A local FastAPI endpoint authenticates one server-configured Bearer
-credential and evaluates requests without executing tools.
+The [watchdog and bootstrap guide](docs/nts-container-watchdog.md) distinguishes
+standalone components, synthetic Docker/child proofs, same-process bootstrap
+composition, and the proposed real integration. Existing synthetic child handoff
+and health proofs do not deliver the new bootstrap context across that process
+boundary. Readiness does not accept a packet or authenticate its sender. Native
+integration tests with synthetic clock observations do not establish real elapsed
+time bounds or trusted clock health.
 
-An explicit opt-in Python executor can invoke the fixed synthetic simulator
-after internal policy evaluation and required PostgreSQL audit delivery.
-Policy decisions, request bindings, and execution events have PostgreSQL
-persistence. The executor is not connected to the HTTP API or startup.
+Timesyncd inspection remains diagnostic: measurement age is unknown, source trust
+is unverified, and approval eligibility is blocked. Chrony/NTS preparation and a
+reviewed procedure do not establish a live measurement. Live NTS collection has
+not been run. Source verification, justified measurement-age and uncertainty
+bounds, operating limits, and runtime enforcement remain prerequisites.
 
-Real operational tool integrations, an approval lifecycle, replay prevention,
-live-model evaluations, production identity management, and deployment
-are not implemented.
+### Version 1 target and remaining gates
 
-This project is independent of the n8n Engineering Playground.
-Prior-project test results do not establish validation for this service.
+Version 1 targets a separately selected approval-backed synthetic execution path.
+It requires verified requester and independent human approver identities, exact
+scope authority and revocation checks, protected request-instance binding, healthy
+trusted time, atomic lifecycle and consumption audit evidence, and enforced
+dispatch acknowledgements and final rechecks. These requirements are not enabled
+by the existing storage, protocols, or isolated proofs. Runtime approval remains
+blocked until every required gate is implemented and independently validated.
 
-See the [architecture and trust-boundary overview](docs/architecture.md)
-for entry points, required audit gates, and current limitations.
+Preserve the existing ordinary synthetic-read and non-executing HTTP contracts.
+Real operational tools, model calls, and unrestricted agent actions are outside
+this target. Public production deployment requires separate scope and acceptance;
+passing this repository's tests does not establish production readiness.
 
-See the [proposed human-approval lifecycle](docs/human-approval-design.md)
-for future requirements. This design implements no approval or execution
-capability.
+### Validation evidence and current results
+
+The recorded PR #92 baseline acceptance on 2026-11-20 passed 2,853 Python tests
+and seven SQL suites, alongside the existing container, child, watchdog, and
+workload-identity proofs. This is historical evidence for that evaluated tree,
+not a continuously current test count or a percentage of project completion.
+Private operational receipts remain outside the repository.
+
+CI covers repository hygiene, lint, formatting, strict source/helper typing,
+and the isolated PostgreSQL acceptance run with the full Python suite. See
+[local validation](#local-validation) for commands and inspect the current CI run
+for results on a particular commit. Database-backed cases require the isolated
+acceptance setup; a local run with skipped database tests is not equivalent.
+
+This project is independent of the n8n Engineering Playground. Prior-project
+test results do not establish validation for this service.
+See the [architecture and trust-boundary overview](docs/architecture.md) for entry
+points and audit gates, and the
+[human-approval design](docs/human-approval-design.md) for the future runtime
+contract. Its lifecycle requirements remain unimplemented beyond the partial
+storage and standalone components described here.
 
 ## Policy interface
 
@@ -379,7 +395,8 @@ not_executed, with no request bindings or execution events created.
 Owned test containers, networks, volume, and temporary credentials were removed.
 
 These were separate local acceptance checks, not additional pytest cases.
-The Python test count remains 1788.
+See [validation evidence and current results](#validation-evidence-and-current-results)
+for the recorded baseline and how to obtain results for another commit.
 
 ### Automated container configuration acceptance
 
@@ -460,7 +477,8 @@ connection, audit write, and independently visible committed record.
 It does not establish power-loss durability, timeout behavior,
 mid-transaction outages, lost-acknowledgement handling, recovery, or load capacity.
 HTTP remains non-executing. Passing container acceptance does not
-establish production readiness. The Python test count remains 1788.
+establish production readiness. These container checks are separate from pytest;
+see [validation evidence and current results](#validation-evidence-and-current-results).
 
 No image publication, Compose stack, public deployment, readiness endpoint,
 simulator wiring, or expanded authority is introduced.
@@ -985,10 +1003,11 @@ Existing policy-only writes remain supported.
 PostgreSQL column types do not preserve original Python input types;
 Python validation remains responsible for exact built-in-type checks.
 
-The isolated acceptance runner applies all three migrations, runs all
-three SQL acceptance suites, and verifies that all three tables are empty
-after each suite rolls back. These SQL checks are separate from the
-1788 Python tests.
+The isolated acceptance runner now applies migrations 001–007 and runs seven
+SQL suites, including protected request, link, and pending-approval storage.
+It verifies that the audited and protected tables are empty after the SQL suites
+roll back. These SQL checks are separate from the Python tests; see
+[validation evidence and current results](#validation-evidence-and-current-results).
 
 No transactional receiver, execution-event storage, or gateway dispatch
 is introduced by this schema change.
