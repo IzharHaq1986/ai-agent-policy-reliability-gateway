@@ -67,12 +67,51 @@ results are deliberately fabricated, not claims about PostgreSQL returning
 uncommitted or stale rows. Inspect the injection and the retained real-reader
 query separately when diagnosing a failure.
 
-## Proposed next proof: start-audit acknowledgement
+## Implemented start-only cases
 
-This section is a design contract for a future disposable proof. No new test,
-start-write composition, or runtime behavior is implemented by this section.
-The consumption-to-simulator tests above keep their existing limited scope;
-they do not already enforce the start gate specified here.
+Two additional disposable parameter cases now compose the existing policy,
+binding, consumption, and start-persistence components. They stop after inspecting
+start intent. They do not call the simulator executor or implement a runtime
+approval controller. The earlier consumption-to-simulator tests above retain
+their separate limited scope; they do not gain a start gate from these new tests.
+
+Each case verifies the existing audit writer/reader roles separately from the
+consumption proof roles. A fixed captured synthetic request is evaluated by the
+real policy. The existing binding receiver must return normally after saving
+the policy and request binding before consumption begins. The consumption
+helper then commits normally, and the independent proof reader checks its pair
+before the real execution receiver is called once with the matching start event.
+
+| Case | Receiver delivery | Independently inspected evidence | Simulator calls |
+| --- | --- | --- | --- |
+| Normal start | Returns `None` after real commit and real close; acknowledged | Matching policy, exact item binding, consumed approval, consumption event, and one start; no terminal event | Zero |
+| Post-commit close error | Real commit and real close finish, then the wrapper raises the fixed original error; unacknowledged | The same matching records remain saved, including the original start; no terminal event | Zero |
+
+The scoped connection wrapper forwards isolation settings and SQL to the actual
+PostgreSQL connection. The test checks exactly one connection attempt, a normal
+commit return, and actual driver close state before injecting the error. It
+retains the original exception object. This models an error reported at the
+post-commit close boundary, not failure to release the connection or a real
+network outage.
+
+Independent inspection occurs after restoring the normal connection function.
+It compares complete saved audit rows with the checked events and binding,
+and checks the consumed pair through the separate proof reader. A later claim
+changes zero rows. Repeated inspection preserves all records, the original
+acknowledgement status, the error identity, and the one-entry start delivery
+count; it does not retry delivery or resume dispatch. A scenario-local observer
+of the real fixed simulator entry remains empty throughout both cases.
+
+The occurrence times are fixed synthetic values. Reference correlation is owned
+by the test; no database-enforced approval/request link or verified human
+identity is added. These two cases cover only the normal start control and
+post-commit close error from the broader contract below.
+
+## Start-audit proof contract
+
+The following contract retains requirements for the broader disposable proof.
+The two cases above are implemented; other cases remain future acceptance
+requirements. This contract does not enable runtime approval or invocation.
 
 ### Intent, not handover
 
@@ -148,7 +187,9 @@ validated results and terminal audit handling after invocation.
 
 ### Future cases and required evidence
 
-The following are acceptance requirements, not executed test results:
+The following are contract requirements. Only the normal start and post-commit
+close-error cases have been implemented by this slice; the other rows remain
+proposed tests, not executed evidence:
 
 | Case | Start evidence | Required handling |
 | --- | --- | --- |
@@ -172,9 +213,9 @@ inspection outside the injected connection boundary. Distinguish confirmed
 rollback from uncertain persistence using real database observations, without
 turning reconciliation into a recovery or dispatch procedure.
 
-Future implementation requires its own recorded scope and real isolated
+Remaining implementation requires its own recorded scope and real isolated
 PostgreSQL acceptance, including full existing checks and resource cleanup.
-Earlier consumption receipts do not verify this proposed composition.
+Earlier consumption receipts do not verify the newly added start-only cases.
 
 ## Limits
 
