@@ -8,8 +8,22 @@ from uuid import UUID
 import psycopg
 import pytest
 from psycopg.errors import CheckViolation
+from psycopg.rows import dict_row  # Compare saved audit rows with the checked events.
 
 from gateway import fixture_simulator  # Exercise only the fixed synthetic simulator.
+from gateway import (
+    postgresql_execution_receiver as start_module,
+)  # Reuse start delivery.
+from gateway.audit import (
+    build_audit_event,
+)  # Build the existing non-executing decision.
+from gateway.execution_audit import build_execution_event  # Build start intent only.
+from gateway.policy import evaluate_request  # Obtain the real fixed policy decision.
+from gateway.postgresql_binding_receiver import (  # Persist the real prerequisite pair.
+    create_postgresql_binding_receiver,  # Keep policy and binding in one transaction.
+)
+from gateway.request_binding import build_request_binding  # Keep the fixed item bound.
+from gateway.request_snapshot import capture_request_snapshot  # Capture context once.
 
 CONTENTION_APPROVAL = UUID("11111111-1111-4111-8111-111111111111")
 ROLLBACK_APPROVAL = UUID("22222222-2222-4222-8222-222222222222")
@@ -496,3 +510,196 @@ def test_scope_authority_revocation_committing_first_blocks_consumption(proof_da
         assert contender.result(timeout=12) == 0
 
     assert observed(reader, REVOKED_SCOPE_APPROVAL) == [("approved", None, None, None)]
+
+
+@pytest.mark.parametrize(  # Give normal completion and close failure separate records.
+    "case_index,close_error",  # Keep the fixed scenario and injected fault together.
+    [(1, False), (2, True)],  # Match the two new disposable approval rows.
+    ids=["confirmed_start", "post_commit_close_error"],  # Identify each proof boundary.
+)
+def test_start_only_preserves_consumption_and_observes_close_outcome(
+    proof_database,  # Retain the verified consumption writer and reader connections.
+    simulator_calls,  # Count fixed simulator entries throughout the proof.
+    monkeypatch,  # Restrict the connection wrapper to the single start receiver call.
+    case_index,  # Derive deterministic references for one isolated fixture scenario.
+    close_error,  # Inject only the specified post-commit, post-close failure.
+):
+    """Persist real start intent but never invoke from this start-only proof."""
+    writer, reader = (
+        proof_database  # Keep proof-role grants separate from audit grants.
+    )
+    audit_writer = os.environ.get("GATEWAY_TEST_WRITER_DSN")  # Existing audit writer.
+    audit_reader = os.environ.get("GATEWAY_TEST_READER_DSN")  # Existing read-only role.
+    assert audit_writer and audit_reader  # Missing setup must not select another DB.
+    for dsn, role in (  # Independently verify both existing audit-role connections.
+        (audit_writer, "gateway_audit_writer"),  # Never use an owner for start writes.
+        (audit_reader, "gateway_audit_reader"),  # Inspect without writer privileges.
+    ):
+        with proof_connection(dsn) as connection:  # Retain bounded SQL and lock waits.
+            assert connection.execute(  # Reject the wrong database or current role.
+                "SELECT current_database(), current_user"  # No caller SQL is accepted.
+            ).fetchone() == ("gateway_audit_test", role)  # Require the disposable DB.
+
+    approval_id = UUID(  # Match the separately seeded row for this scenario only.
+        f"30000000-0000-4000-8000-{case_index:012d}"  # Synthetic identity only.
+    )
+    execution_id = UUID(  # Use one execution reference across consumption and start.
+        f"40000000-0000-4000-8000-{case_index:012d}"  # Never replace it after an error.
+    )
+    policy_id = (
+        f"50000000-0000-4000-8000-{case_index:012d}"  # Link the real audit pair.
+    )
+    start_id = f"60000000-0000-4000-8000-{case_index:012d}"  # One original start event.
+    snapshot = capture_request_snapshot(  # Retain immutable fixed request context.
+        {  # This is synthetic fixture input, not a human approval request.
+            "tool": "fixture_store",  # Only the existing practice tool is selected.
+            "operation": "READ_ITEM",  # No operational write or external tool call.
+            "arguments": {"item_id": 1},  # Bind the same fixed item throughout.
+        },
+        principal_id="reliability-reader",  # No human authentication.
+    )
+    decision = evaluate_request(  # Reuse the existing policy rather than forge ALLOW.
+        snapshot.to_policy_request(),  # Evaluate the captured request values only.
+        principal_id=snapshot.principal_id,  # Preserve the separately supplied caller.
+    )
+    assert decision["decision"] == "ALLOW"  # A denial must stop before persistence.
+    policy = build_audit_event(  # Use the checked non-executing policy event contract.
+        decision,  # Preserve the actual policy result and its not_executed status.
+        principal_id=snapshot.principal_id,  # Correlate policy and binding context.
+        event_id=policy_id,  # Keep the scenario's exact policy-event reference.
+        occurred_at="2026-01-01T00:00:00Z",  # Synthetic time only.
+    )
+    binding = build_request_binding(  # Use the existing fixed binding contract.
+        policy_event_id=policy_id,  # Link the binding to the real saved policy event.
+        principal_id=snapshot.principal_id,  # Keep the captured caller unchanged.
+        tool=snapshot.tool,  # Match the fixed request's tool.
+        operation=snapshot.operation,  # Match the fixed read operation.
+        item_id=snapshot.item_id,  # Preserve the exact captured practice item.
+    )
+    assert create_postgresql_binding_receiver(audit_writer)(policy, binding) is None
+    # The pair receiver must acknowledge commit and close before consumption begins.
+    with proof_connection(writer) as connection:  # Consume through existing test SQL.
+        assert (
+            competing_claim(connection, approval_id, execution_id) == 1
+        )  # Normal ack.
+    committed = [  # Verify both consumed references before start delivery.
+        ("consumed", execution_id, execution_id, "consumed")  # One matching attempt.
+    ]
+    assert observed(reader, approval_id) == committed  # Real independent proof reader.
+    start = build_execution_event(  # Build checked start intent.
+        event_id=start_id,  # Keep the original event identity even after close failure.
+        execution_id=str(execution_id),  # Match consumption's UUID using event text.
+        policy_event_id=policy_id,  # Require the acknowledged policy-binding context.
+        occurred_at="2026-01-01T00:00:01Z",  # Not trusted UTC proof.
+        principal_id=snapshot.principal_id,  # Match the bound caller context.
+        tool=snapshot.tool,  # Preserve the practice tool.
+        operation=snapshot.operation,  # Preserve the captured read operation.
+        status="started",  # Record intent without inventing a terminal outcome.
+        reason_code="SIMULATION_STARTED",  # Use the existing start-event reason.
+    )
+
+    def inspect_context(expected_starts):
+        """Inspect real committed rows outside the injected connection boundary."""
+        assert observed(reader, approval_id) == committed  # Preserve consumed evidence.
+        with proof_connection(audit_reader) as connection:  # Separate read-only role.
+            connection.row_factory = dict_row  # Compare every stored event field.
+            policies = connection.execute(  # Inspect only the original policy identity.
+                "SELECT * FROM gateway_audit.policy_decisions WHERE event_id = %s",
+                (policy_id,),  # Never accept the start event as its own policy proof.
+            ).fetchall()
+            bindings = connection.execute(  # Verify the bound item and caller context.
+                "SELECT * FROM gateway_audit.request_bindings "  # Saved item.
+                "WHERE policy_event_id = %s",  # Use the exact acknowledged policy ID.
+                (policy_id,),  # Match the same policy reference used at delivery.
+            ).fetchall()
+            starts = connection.execute(  # Include all events for this execution.
+                "SELECT * FROM gateway_audit.execution_events WHERE execution_id = %s",
+                (str(execution_id),),  # Detect unexpected terminal or duplicate events.
+            ).fetchall()
+        assert policies == [policy]  # Real policy context remains exactly as captured.
+        assert bindings == [binding]  # Match the exact captured item.
+        assert starts == expected_starts  # Zero before delivery; one start afterward.
+
+    inspect_context([])  # Confirm prerequisites and no existing start before delivery.
+    receiver = start_module.create_postgresql_execution_receiver(audit_writer)
+    # Use the actual receiver; only its connection lifecycle is observed below.
+    real_connect = psycopg.connect  # Retain real PostgreSQL access before injection.
+    phases = []  # Require a real commit and real close in the documented order.
+    receiver_entries = []  # Detect retries independently of returned status flags.
+    close_failure = psycopg.OperationalError(  # Reuse one identifiable injected error.
+        "synthetic post-commit close failure"  # Exclude credentials and raw DB details.
+    )
+
+    class ObservedConnection:
+        """Delegate SQL to PostgreSQL and fail only after actual connection close."""
+
+        def __init__(self, connection):
+            self.connection = connection  # Retain the real receiver-owned connection.
+
+        @property  # Forward the receiver's transaction configuration unchanged.
+        def isolation_level(self):
+            return self.connection.isolation_level  # Expose the actual driver setting.
+
+        @isolation_level.setter  # Do not leave isolation configuration on the wrapper.
+        def isolation_level(self, value):
+            self.connection.isolation_level = value  # Apply the real transaction mode.
+
+        def execute(self, *args, **kwargs):
+            return self.connection.execute(*args, **kwargs)  # Use real SQL results.
+
+        def commit(self):
+            self.connection.commit()  # Require PostgreSQL to acknowledge the commit.
+            phases.append("commit_returned")  # Record only a normal real commit return.
+
+        def rollback(self):
+            self.connection.rollback()  # Preserve existing receiver cleanup behavior.
+            phases.append("rollback_returned")  # A rollback cannot erase a past commit.
+
+        def close(self):
+            self.connection.close()  # Close the actual connection before injection.
+            assert self.connection.closed  # Independently inspect driver close state.
+            phases.append("close_returned")  # Keep close distinct from call success.
+            if close_error:  # Inject only in the named post-commit close-error case.
+                raise close_failure  # Preserve the exact original failure object.
+
+    def observed_connect(conninfo, **kwargs):
+        """Wrap only the intended start receiver's real writer connection."""
+        assert conninfo == audit_writer  # Do not intercept proof or reader connections.
+        phases.append("connection_opening")  # Count attempts without secrets.
+        return ObservedConnection(real_connect(conninfo, **kwargs))  # Real connection.
+
+    start_acknowledged = False  # Saved state alone can never set acknowledgement.
+    caught_failure = None  # Retain any original injected close error.
+    with monkeypatch.context() as injected:  # Restore real connect before inspection.
+        injected.setattr(  # The scope contains exactly one start receiver call.
+            start_module.psycopg,  # Patch the driver's shared module only temporarily.
+            "connect",  # Intercept connection creation without replacing the receiver.
+            observed_connect,  # Delegate all persistence to the real connection.
+        )
+        receiver_entries.append(start_id)  # Count the attempt before entering delivery.
+        try:  # No retry or reconciliation is allowed inside this delivery attempt.
+            acknowledgement = receiver(start)  # Execute the real start write once.
+        except psycopg.OperationalError as failure:  # Preserve unacknowledged delivery.
+            assert close_error  # A database error in the success control must fail.
+            assert failure is close_failure  # Reject earlier unrelated driver failures.
+            caught_failure = failure  # Retain failure identity across reconciliation.
+        else:  # Only normal completion, including close, can acknowledge delivery.
+            assert acknowledgement is None  # Require the receiver's documented result.
+            start_acknowledged = True  # Never set this flag from an independent read.
+    assert phases == [  # No retries, early fake commit, or skipped close are accepted.
+        "connection_opening",  # One real connection attempt.
+        "commit_returned",  # One acknowledged real start commit.
+        "close_returned",  # One actual close before the possible injected exception.
+    ]
+    assert start_acknowledged is (not close_error)  # Separate delivery from storage.
+    assert caught_failure is (close_failure if close_error else None)  # Preserve cause.
+    assert receiver_entries == [start_id]  # One start delivery attempt in either case.
+    assert simulator_calls == []  # Start alone cannot authorize invocation.
+    inspect_context([start])  # Both cases saved one start; neither saved a terminal.
+    with proof_connection(writer) as later_writer:  # Probe reuse without recovery.
+        assert claim(later_writer, approval_id, SECOND_EXECUTION) == 0  # Still spent.
+    inspect_context([start])  # Investigation and rejected reuse must preserve all rows.
+    assert start_acknowledged is (not close_error)  # No status change from inspection.
+    assert caught_failure is (close_failure if close_error else None)  # Retain failure.
+    assert receiver_entries == [start_id]  # No new start write during reconciliation.
+    assert simulator_calls == []  # End the start-only proof without any handover.

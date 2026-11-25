@@ -58,4 +58,10 @@ VALUES
     ('10000000-0000-4000-8000-000000000002', 'approved'), -- Wrong reported execution.
     ('10000000-0000-4000-8000-000000000003', 'approved'); -- Unavailable verification.
 
+-- Keep the start-only control separate from the post-commit close-error scenario.
+INSERT INTO approval_consumption_proof.approvals (approval_id, state)
+VALUES
+    ('30000000-0000-4000-8000-000000000001', 'approved'), -- Normally acknowledged start.
+    ('30000000-0000-4000-8000-000000000002', 'approved'); -- Saved start with close error.
+
 COMMIT;
