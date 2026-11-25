@@ -69,7 +69,7 @@ query separately when diagnosing a failure.
 
 ## Implemented start-only cases
 
-Two additional disposable parameter cases now compose the existing policy,
+Four disposable parameter cases compose the existing policy,
 binding, consumption, and start-persistence components. They stop after inspecting
 start intent. They do not call the simulator executor or implement a runtime
 approval controller. The earlier consumption-to-simulator tests above retain
@@ -86,13 +86,27 @@ before the real execution receiver is called once with the matching start event.
 | --- | --- | --- | --- |
 | Normal start | Returns `None` after real commit and real close; acknowledged | Matching policy, exact item binding, consumed approval, consumption event, and one start; no terminal event | Zero |
 | Post-commit close error | Real commit and real close finish, then the wrapper raises the fixed original error; unacknowledged | The same matching records remain saved, including the original start; no terminal event | Zero |
+| Start INSERT rolled back | The real INSERT returns, then an injected error stops delivery before commit; real rollback and close finish; unacknowledged | Policy, binding, and consumed pair remain committed; no start or terminal event | Zero |
+| Start commit confirmation lost | Real INSERT and commit return internally, then the wrapper raises before returning commit confirmation to the receiver; cleanup rollback and close finish; unacknowledged | Policy, binding, consumed pair, and original start remain saved; no terminal event | Zero |
 
 The scoped connection wrapper forwards isolation settings and SQL to the actual
-PostgreSQL connection. The test checks exactly one connection attempt, a normal
-commit return, and actual driver close state before injecting the error. It
-retains the original exception object. This models an error reported at the
-post-commit close boundary, not failure to release the connection or a real
-network outage.
+PostgreSQL connection. Every case requires one connection attempt and an actual
+successful start INSERT. The expected ordered phase list then distinguishes
+commit, rollback, and close. The original exception object is retained for each
+fault. All cases check actual driver close state; cleanup rollback must return
+with the connection's transaction status idle.
+
+The pre-commit fault occurs after the real INSERT returns and before commit is
+called. The receiver's real rollback removes that uncommitted start, while the
+earlier consumption transaction remains saved. The lost-confirmation fault
+occurs after the real commit returns inside the wrapper but before that return
+reaches the receiver. Its cleanup rollback cannot undo the committed start.
+Separate reader queries distinguish absent start evidence from a saved start;
+idle transaction status alone does not establish which outcome occurred.
+
+The existing close-error case still raises only after actual close. None of
+these injected errors reproduces a network outage, database crash, actual
+connection loss, or failure to release the connection.
 
 Independent inspection occurs after restoring the normal connection function.
 It compares complete saved audit rows with the checked events and binding,
@@ -100,17 +114,19 @@ and checks the consumed pair through the separate proof reader. A later claim
 changes zero rows. Repeated inspection preserves all records, the original
 acknowledgement status, the error identity, and the one-entry start delivery
 count; it does not retry delivery or resume dispatch. A scenario-local observer
-of the real fixed simulator entry remains empty throughout both cases.
+of the real fixed simulator entry remains empty throughout all four cases.
 
 The occurrence times are fixed synthetic values. Reference correlation is owned
 by the test; no database-enforced approval/request link or verified human
-identity is added. These two cases cover only the normal start control and
-post-commit close error from the broader contract below.
+identity is added. These four cases cover the normal control, post-commit close
+error, confirmed start rollback, and lost start-commit confirmation from the
+broader contract below. They do not add the remaining prerequisite-failure or
+cross-context rejection cases.
 
 ## Start-audit proof contract
 
 The following contract retains requirements for the broader disposable proof.
-The two cases above are implemented; other cases remain future acceptance
+The four cases above are implemented; other cases remain future acceptance
 requirements. This contract does not enable runtime approval or invocation.
 
 ### Intent, not handover
@@ -187,9 +203,10 @@ validated results and terminal audit handling after invocation.
 
 ### Future cases and required evidence
 
-The following are contract requirements. Only the normal start and post-commit
-close-error cases have been implemented by this slice; the other rows remain
-proposed tests, not executed evidence:
+The following are contract requirements. Normal start, post-commit close error,
+confirmed start rollback, and lost start-commit confirmation are implemented.
+The consumption-prerequisite and cross-context rejection rows remain proposed
+start-only tests, not executed evidence:
 
 | Case | Start evidence | Required handling |
 | --- | --- | --- |
@@ -215,7 +232,7 @@ turning reconciliation into a recovery or dispatch procedure.
 
 Remaining implementation requires its own recorded scope and real isolated
 PostgreSQL acceptance, including full existing checks and resource cleanup.
-Earlier consumption receipts do not verify the newly added start-only cases.
+Earlier consumption or start-only receipts do not verify newly added cases.
 
 ## Limits
 

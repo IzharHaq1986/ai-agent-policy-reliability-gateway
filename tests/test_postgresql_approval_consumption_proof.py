@@ -512,17 +512,27 @@ def test_scope_authority_revocation_committing_first_blocks_consumption(proof_da
     assert observed(reader, REVOKED_SCOPE_APPROVAL) == [("approved", None, None, None)]
 
 
-@pytest.mark.parametrize(  # Give normal completion and close failure separate records.
-    "case_index,close_error",  # Keep the fixed scenario and injected fault together.
-    [(1, False), (2, True)],  # Match the two new disposable approval rows.
-    ids=["confirmed_start", "post_commit_close_error"],  # Identify each proof boundary.
+@pytest.mark.parametrize(  # Isolate each start boundary with its own seeded approval.
+    "case_index,fault",  # Keep each fixed scenario and its injected boundary together.
+    [  # Preserve the original two scenarios and add two independent failure records.
+        (1, "none"),  # Keep the normal receiver-completion control.
+        (2, "close_error"),  # Keep the real-close-then-error control.
+        (3, "before_commit"),  # Fail after the actual INSERT, before any commit.
+        (4, "commit_unknown"),  # Fail after real commit, before its wrapper returns.
+    ],
+    ids=[  # Expose the exact boundary if a parameter case fails in acceptance.
+        "confirmed_start",  # Preserve the existing successful control name.
+        "post_commit_close_error",  # Preserve the existing close-error case name.
+        "start_insert_rollback",  # Real inserted start must disappear on rollback.
+        "lost_start_commit_acknowledgement",  # Real committed start must remain saved.
+    ],
 )
 def test_start_only_preserves_consumption_and_observes_close_outcome(
     proof_database,  # Retain the verified consumption writer and reader connections.
     simulator_calls,  # Count fixed simulator entries throughout the proof.
     monkeypatch,  # Restrict the connection wrapper to the single start receiver call.
     case_index,  # Derive deterministic references for one isolated fixture scenario.
-    close_error,  # Inject only the specified post-commit, post-close failure.
+    fault,  # Inject only the named boundary after the real operation succeeds.
 ):
     """Persist real start intent but never invoke from this start-only proof."""
     writer, reader = (
@@ -618,20 +628,25 @@ def test_start_only_preserves_consumption_and_observes_close_outcome(
             ).fetchall()
         assert policies == [policy]  # Real policy context remains exactly as captured.
         assert bindings == [binding]  # Match the exact captured item.
-        assert starts == expected_starts  # Zero before delivery; one start afterward.
+        assert starts == expected_starts  # Reject wrong, missing, or terminal events.
 
     inspect_context([])  # Confirm prerequisites and no existing start before delivery.
     receiver = start_module.create_postgresql_execution_receiver(audit_writer)
     # Use the actual receiver; only its connection lifecycle is observed below.
     real_connect = psycopg.connect  # Retain real PostgreSQL access before injection.
-    phases = []  # Require a real commit and real close in the documented order.
+    phases = []  # Distinguish real insert, commit, rollback, and close boundaries.
     receiver_entries = []  # Detect retries independently of returned status flags.
-    close_failure = psycopg.OperationalError(  # Reuse one identifiable injected error.
-        "synthetic post-commit close failure"  # Exclude credentials and raw DB details.
+    injected_failure = psycopg.OperationalError(  # Preserve the exact error object.
+        {  # Fixed messages never contain credentials, SQL results, or private paths.
+            "none": "unused synthetic start failure",  # Never raised by the control.
+            "close_error": "synthetic post-commit close failure",  # Retain old fault.
+            "before_commit": "synthetic start failure before commit",  # Rollback case.
+            "commit_unknown": "synthetic lost start commit acknowledgement",  # Saved.
+        }[fault]  # The parameter list limits selection to these four test scenarios.
     )
 
     class ObservedConnection:
-        """Delegate SQL to PostgreSQL and fail only after actual connection close."""
+        """Delegate real database operations before injecting the selected fault."""
 
         def __init__(self, connection):
             self.connection = connection  # Retain the real receiver-owned connection.
@@ -645,22 +660,36 @@ def test_start_only_preserves_consumption_and_observes_close_outcome(
             self.connection.isolation_level = value  # Apply the real transaction mode.
 
         def execute(self, *args, **kwargs):
-            return self.connection.execute(*args, **kwargs)  # Use real SQL results.
+            result = self.connection.execute(
+                *args, **kwargs
+            )  # Execute actual SQL first.
+            if (
+                args and args[0] == start_module._INSERT
+            ):  # Observe the real start INSERT.
+                phases.append("start_insert_returned")  # Require normal INSERT return.
+                if fault == "before_commit":  # Fail while the start is uncommitted.
+                    raise injected_failure  # Receiver must roll back and close.
+            return result  # Preserve every real cursor and result in the other cases.
 
         def commit(self):
             self.connection.commit()  # Require PostgreSQL to acknowledge the commit.
             phases.append("commit_returned")  # Record only a normal real commit return.
+            if fault == "commit_unknown":  # Hide confirmation after the actual commit.
+                raise injected_failure  # The receiver must not acknowledge delivery.
 
         def rollback(self):
             self.connection.rollback()  # Preserve existing receiver cleanup behavior.
+            status = self.connection.info.transaction_status  # Observe real cleanup.
+            assert status is psycopg.pq.TransactionStatus.IDLE  # No open transaction.
+            # IDLE alone cannot show whether a prior commit saved the start.
             phases.append("rollback_returned")  # A rollback cannot erase a past commit.
 
         def close(self):
             self.connection.close()  # Close the actual connection before injection.
             assert self.connection.closed  # Independently inspect driver close state.
             phases.append("close_returned")  # Keep close distinct from call success.
-            if close_error:  # Inject only in the named post-commit close-error case.
-                raise close_failure  # Preserve the exact original failure object.
+            if fault == "close_error":  # Retain the existing post-close failure case.
+                raise injected_failure  # Preserve the exact original failure object.
 
     def observed_connect(conninfo, **kwargs):
         """Wrap only the intended start receiver's real writer connection."""
@@ -669,7 +698,7 @@ def test_start_only_preserves_consumption_and_observes_close_outcome(
         return ObservedConnection(real_connect(conninfo, **kwargs))  # Real connection.
 
     start_acknowledged = False  # Saved state alone can never set acknowledgement.
-    caught_failure = None  # Retain any original injected close error.
+    caught_failure = None  # Retain the original error without changing its meaning.
     with monkeypatch.context() as injected:  # Restore real connect before inspection.
         injected.setattr(  # The scope contains exactly one start receiver call.
             start_module.psycopg,  # Patch the driver's shared module only temporarily.
@@ -680,26 +709,36 @@ def test_start_only_preserves_consumption_and_observes_close_outcome(
         try:  # No retry or reconciliation is allowed inside this delivery attempt.
             acknowledgement = receiver(start)  # Execute the real start write once.
         except psycopg.OperationalError as failure:  # Preserve unacknowledged delivery.
-            assert close_error  # A database error in the success control must fail.
-            assert failure is close_failure  # Reject earlier unrelated driver failures.
+            assert fault != "none"  # Any database error in the success control fails.
+            assert failure is injected_failure  # Reject unrelated or earlier DB errors.
             caught_failure = failure  # Retain failure identity across reconciliation.
         else:  # Only normal completion, including close, can acknowledge delivery.
             assert acknowledgement is None  # Require the receiver's documented result.
             start_acknowledged = True  # Never set this flag from an independent read.
-    assert phases == [  # No retries, early fake commit, or skipped close are accepted.
+    expected_phases = [  # Derive the required order from the fixed scenario only.
         "connection_opening",  # One real connection attempt.
-        "commit_returned",  # One acknowledged real start commit.
-        "close_returned",  # One actual close before the possible injected exception.
+        "start_insert_returned",  # Every fault follows an actual successful INSERT.
     ]
-    assert start_acknowledged is (not close_error)  # Separate delivery from storage.
-    assert caught_failure is (close_failure if close_error else None)  # Preserve cause.
-    assert receiver_entries == [start_id]  # One start delivery attempt in either case.
+    if fault != "before_commit":  # The rollback case must never reach real commit.
+        expected_phases.append("commit_returned")  # Require commit in the other cases.
+    if fault in {"before_commit", "commit_unknown"}:  # Existing receiver cleanup path.
+        expected_phases.append("rollback_returned")  # Verify real cleanup completed.
+    expected_phases.append("close_returned")  # Close the real connection in every case.
+    assert phases == expected_phases  # Reject missing phases, extra calls, and retries.
+    assert start_acknowledged is (
+        fault == "none"
+    )  # Only normal completion acknowledges.
+    expected_failure = None if fault == "none" else injected_failure  # Preserve cause.
+    assert caught_failure is expected_failure  # Do not replace the original error.
+    assert receiver_entries == [start_id]  # One start delivery attempt in every case.
     assert simulator_calls == []  # Start alone cannot authorize invocation.
-    inspect_context([start])  # Both cases saved one start; neither saved a terminal.
+    saved_starts = [] if fault == "before_commit" else [start]  # Rollback versus saved.
+    inspect_context(saved_starts)  # Inspect real persistence outside the wrapper.
     with proof_connection(writer) as later_writer:  # Probe reuse without recovery.
         assert claim(later_writer, approval_id, SECOND_EXECUTION) == 0  # Still spent.
-    inspect_context([start])  # Investigation and rejected reuse must preserve all rows.
-    assert start_acknowledged is (not close_error)  # No status change from inspection.
-    assert caught_failure is (close_failure if close_error else None)  # Retain failure.
+    inspect_context(saved_starts)  # Reconciliation and rejected reuse preserve state.
+    assert start_acknowledged is (fault == "none")  # Inspection cannot acknowledge.
+    assert caught_failure is expected_failure  # Retain the original error after reads.
+    assert phases == expected_phases  # No retry or write is hidden in reconciliation.
     assert receiver_entries == [start_id]  # No new start write during reconciliation.
     assert simulator_calls == []  # End the start-only proof without any handover.
