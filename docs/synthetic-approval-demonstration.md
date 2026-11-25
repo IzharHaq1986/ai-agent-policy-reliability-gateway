@@ -67,6 +67,115 @@ results are deliberately fabricated, not claims about PostgreSQL returning
 uncommitted or stale rows. Inspect the injection and the retained real-reader
 query separately when diagnosing a failure.
 
+## Proposed next proof: start-audit acknowledgement
+
+This section is a design contract for a future disposable proof. No new test,
+start-write composition, or runtime behavior is implemented by this section.
+The consumption-to-simulator tests above keep their existing limited scope;
+they do not already enforce the start gate specified here.
+
+### Intent, not handover
+
+After the practice ticket is marked used, the clerk records "preparing to hand
+over." If saving or confirming that entry fails, the clerk hands over nothing.
+Even a confirmed preparation entry records intent, not a completed handover.
+The ticket stays used when preparation fails.
+
+### Reuse and correlation boundary
+
+Reuse the existing
+[`create_postgresql_execution_receiver`](../src/gateway/postgresql_execution_receiver.py)
+and [execution-event contract](../src/gateway/execution_audit.py). Do not add a
+second production start-event store or weaken the receiver to accommodate the
+consumption fixture. The receiver already checks an allowed policy decision,
+its request binding, and the attempt's existing execution events. It does not
+check approval consumption or establish human authority.
+
+A future test composition must retain the following fixed scenario context:
+
+| Reference or value | Required correlation |
+| --- | --- |
+| Synthetic approval ID | Select exactly one disposable approval row and its consumption event |
+| Execution ID | Match the consumed approval, consumption event, and proposed start event |
+| Policy-event ID | Match the acknowledged policy decision, request binding, and start event |
+| Principal, tool, operation, item | Capture one fixed synthetic request; match policy and binding context, including the bound item |
+| Start-event ID | Identify one original start-write attempt; do not replace it after uncertainty |
+| Start status and reason | Use `started` and `SIMULATION_STARTED` under the existing event schema |
+| Occurrence time | Use valid, explicitly synthetic fixture time; do not claim verified clock health |
+
+The consumption fixture has no policy-event or protected-request binding column.
+Its relationship to policy context must therefore be explicit in the test-owned
+scenario, checked before start recording and in the independent observations.
+This is test correlation, not a new database-enforced approval/request link or
+complete protected-request binding. The start event does not carry an approval
+ID or item ID; inspect its execution reference and linked policy binding rather
+than inventing fields in the existing event contract.
+
+Keep the proof writer/reader roles separate from the existing audit writer/reader
+roles. Use their existing isolated acceptance connections and verify database
+and role identities. Any future fixture setup must preserve least privilege;
+it must not grant application roles lifecycle writes or broaden privileges
+merely to combine these observations.
+
+### Required future sequence
+
+1. Capture fixed synthetic context and persist the policy ALLOW decision and
+   matching request binding through the existing acknowledged binding path.
+   Failure or missing acknowledgement stops before consumption and start writes.
+2. Consume the selected disposable approval and save its consumption event in
+   one transaction. Require normal commit acknowledgement for this attempt and
+   independently verify the matching consumed pair. Failure stops before any
+   call to the start receiver; a later inspection cannot resume the attempt.
+3. Build the same attempt's start event using the existing contract and deliver
+   it once through the existing execution receiver. Success requires the full
+   receiver call to return normally with its documented `None` result, including
+   connection close. A commit followed by a close error is not successful
+   delivery acknowledgement for this attempt.
+4. Independently inspect policy, binding, consumed approval, consumption event,
+   and any start event through the appropriate read-only roles. This observation
+   is additional evidence; it cannot replace a missing delivery acknowledgement.
+5. End the start-only proof without invoking the simulator. Preserve zero actual
+   simulator entries in every case, including the successful start-write control.
+   Do not create a fabricated completed or failed simulator outcome event.
+
+The complete approval-backed path still requires final checks of exact request
+binding, current policy ALLOW, requester authorization, applicable versions, and
+expiry, plus a justified bound between those checks and invocation. Human
+eligibility, separation of duties, current scope authority, and healthy trusted
+time remain separate prerequisites. This start-only proof supplies none of
+those missing guarantees. A future passing final gate would still require
+validated results and terminal audit handling after invocation.
+
+### Future cases and required evidence
+
+The following are acceptance requirements, not executed test results:
+
+| Case | Start evidence | Required handling |
+| --- | --- | --- |
+| Normally acknowledged start | Exactly one matching start independently visible with the expected policy binding and execution reference | Successful start-only control; no simulator call |
+| Consumption or its verification fails | Start receiver call count is zero; no start for that scenario | Preserve any committed consumption; stop without invocation |
+| Scenario execution references disagree | No start write for the mismatched scenario | Reject before receiver delivery; preserve saved evidence |
+| Start transaction fails and rollback is confirmed | No start for the failed attempt; consumption and its event remain committed | Stop without invocation; do not restore approval availability |
+| Start commits, then confirmation is lost | Original start independently visible; consumption and its event remain committed | Preserve original failure and identities; no invocation, retry, or automatic resume |
+| Receiver close fails after commit | Original start may be saved; inspect through the separate reader | Treat delivery as failed; saved state cannot authorize continuation |
+
+Use separate disposable scenario identities and record actual receiver entries
+and actual simulator entries independently of returned status labels. Failed
+start persistence must not roll back the previously committed consumption.
+Every post-consumption case must retain the matching consumed pair and reject
+a later reuse claim. Do not delete a saved start to manufacture rollback evidence
+or substitute a new event or execution ID after an ambiguous outcome.
+
+Injecting an error after a real start commit demonstrates saved evidence with
+lost confirmation; it does not reproduce a network outage. Keep independent
+inspection outside the injected connection boundary. Distinguish confirmed
+rollback from uncertain persistence using real database observations, without
+turning reconciliation into a recovery or dispatch procedure.
+
+Future implementation requires its own recorded scope and real isolated
+PostgreSQL acceptance, including full existing checks and resource cleanup.
+Earlier consumption receipts do not verify this proposed composition.
+
 ## Limits
 
 These tests prove the explicitly written test sequence, not an integrated runtime
