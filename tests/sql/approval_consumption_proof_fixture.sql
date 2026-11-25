@@ -64,4 +64,10 @@ VALUES
     ('30000000-0000-4000-8000-000000000001', 'approved'), -- Normally acknowledged start.
     ('30000000-0000-4000-8000-000000000002', 'approved'); -- Saved start with close error.
 
+-- Separate pre-commit rollback from confirmation loss after a real start commit.
+INSERT INTO approval_consumption_proof.approvals (approval_id, state)
+VALUES
+    ('30000000-0000-4000-8000-000000000003', 'approved'), -- Start INSERT is rolled back.
+    ('30000000-0000-4000-8000-000000000004', 'approved'); -- Start commit stays saved.
+
 COMMIT;
